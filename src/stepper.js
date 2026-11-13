@@ -98,7 +98,21 @@ for (const y of [-.48, -.24, .24, .48]) {
   magnetic.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(path.getPoints(100)), new THREE.LineBasicMaterial({ color: 0xd8f88a, transparent: true, opacity: .35 })));
 }
 const rotorField = new THREE.Group(); rotorPart.add(rotorField);
-const rotorArrow = arrow(rotorField, 0x6edbff, new THREE.Vector3(0, 0, 1.28)); rotorArrow.setLength(.88, .13, .08);
+// Schematic closed flux loops: outside N -> S, inside S -> N; not a field solver.
+for (const side of [-1, 1]) for (const height of [.7, 1.12]) {
+  const path = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(.68, 0, .82), new THREE.Vector3(.98, side * .35, .82),
+    new THREE.Vector3(0, side * height, .82), new THREE.Vector3(-.98, side * .35, .82),
+    new THREE.Vector3(-.68, 0, .82), new THREE.Vector3(0, 0, .82),
+  ], true);
+  const line = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(path.getPoints(120)), new THREE.LineBasicMaterial({ color: 0x6edbff, transparent: true, opacity: .65, depthTest: false, depthWrite: false }));
+  line.renderOrder = 3; rotorField.add(line);
+  const direction = arrow(rotorField, 0x6edbff, new THREE.Vector3(.14, side * height, .82));
+  direction.setDirection(new THREE.Vector3(-1, 0, 0)); direction.setLength(.28, .1, .065);
+}
+const internalField = arrow(rotorField, 0x6edbff, new THREE.Vector3(-.34, 0, .82)); internalField.setLength(.68, .11, .065);
+const rotorAxis = new THREE.Group(); rotorPart.add(rotorAxis);
+const rotorArrow = arrow(rotorAxis, 0x6edbff, new THREE.Vector3(0, 0, 1.28)); rotorArrow.setLength(.88, .13, .08);
 const forces = new THREE.Group(); rotorPart.add(forces);
 const torqueArrow = arrow(forces, 0xffd16e);
 const scale = new THREE.Group(); motor.add(scale);
@@ -154,11 +168,11 @@ $('zero').onclick = () => {
 };
 $('reset').onclick = stage.resetCamera;
 $('front').onclick = stage.resetCamera;
-const visibility = { terminals, 'terminal-labels': terminalLabels, 'stator-electrons': electrons, 'electron-paths': paths, 'stator-core': stator, 'rotor-visible': rotorPart, 'shaft-visible': shaft, 'grid-visible': grid, windings: winding, magnetic, 'rotor-field': rotorField, 'winding-currents': currents, 'conductor-fields': contributions, forces, 'angle-scale': scale };
+const visibility = { terminals, 'terminal-labels': terminalLabels, 'stator-electrons': electrons, 'electron-paths': paths, 'stator-core': stator, 'rotor-visible': rotorPart, 'shaft-visible': shaft, 'grid-visible': grid, windings: winding, magnetic, 'rotor-field': rotorField, 'rotor-axis': rotorAxis, 'winding-currents': currents, 'conductor-fields': contributions, forces, 'angle-scale': scale };
 for (const [id, object] of Object.entries(visibility)) $(id).onchange = e => { object.visible = e.target.checked; };
 $('info-visible').onchange = e => { $('part-info').hidden = !e.target.checked; };
 function preset(kind) {
-  const active = ['terminals', 'terminal-labels', 'windings', 'rotor-visible', 'angle-scale', 'grid-visible', 'info-visible'];
+  const active = ['terminals', 'terminal-labels', 'windings', 'rotor-visible', 'rotor-axis', 'angle-scale', 'grid-visible', 'info-visible'];
   if (kind === 'fields') active.push('stator-core', 'shaft-visible', 'magnetic', 'rotor-field', 'conductor-fields', 'forces');
   else if (kind === 'electrons') active.push('stator-electrons', 'electron-paths', 'winding-currents');
   else active.push('stator-core', 'shaft-visible', 'stator-electrons', 'magnetic', 'rotor-field', 'winding-currents', 'forces');
@@ -208,6 +222,7 @@ function updateMotor() {
   for (const part of parts) part.position.z = part.userData.offset * Number($('explode').value) / 100;
   housing.visible = $('housing').checked; front.visible = rear.visible = housing.visible || Number($('explode').value) > 0;
   rotor.rotation.z = shaft.rotation.z = model.angle;
+  rotorField.rotation.z = model.angle;
   rotorArrow.setDirection(new THREE.Vector3(Math.cos(model.angle), Math.sin(model.angle), 0));
   magnetic.visible = $('magnetic').checked && magnitude > 0;
   magnetic.rotation.z = Math.atan2(values[1], values[0]); fieldArrow.setLength(1.15 * magnitude, .18, .1);
