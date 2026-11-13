@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { createStage, TAU, material, cylinderGeometry, ringGeometry, textSprite, electronTexture, canvasContext } from './lab-view.js';
 import { StepperModel, modes, degrees } from './stepper-model.js';
+import { createControlHelp } from './control-help.js';
 import './style.css';
 
 const $ = id => document.getElementById(id);
@@ -86,6 +87,10 @@ for (const side of [-1, 1]) {
 }
 const shaft = part('Welle', 'Die Welle folgt der tatsächlichen Rotorposition, nicht unmittelbar dem Sollwinkel.', 1.5);
 mesh(cylinderGeometry(.14, 3), steel, shaft);
+const shaftKey = mesh(new THREE.BoxGeometry(.05, .045, .4), material(0xc6d0d8), shaft);
+shaftKey.position.set(0, .14, 1.24);
+const shaftMark = mesh(new THREE.BoxGeometry(.1, .03, .012), material(0x263943), shaft);
+shaftMark.position.set(.04, 0, 1.506);
 const housing = part('Gehäuse', 'Das Gehäuse schützt Wicklungen und Rotor.', -.8);
 mesh(ringGeometry(1.94, 1.83, 1.55), material(0x526b7c, { transparent: true, opacity: .4, depthWrite: false }), housing);
 const front = part('Lagerschild vorn', 'Das Lager hält die Welle mittig im Luftspalt.', 2.8);
@@ -141,7 +146,7 @@ function manualStep(sign) {
 $('play').onclick = () => setRunning(!running);
 $('step').onclick = () => manualStep(model.direction);
 $('step-back').onclick = () => manualStep(-model.direction);
-$('direction').onclick = () => { model.direction *= -1; $('direction').textContent = `${model.direction > 0 ? '↻' : '↺'} Drehrichtung umkehren`; };
+$('direction').onclick = () => { model.direction *= -1; $('direction').textContent = `${model.direction > 0 ? '↻' : '↺'} Richtung umkehren`; };
 $('hold').onclick = () => {
   holding = !holding; model.clock = 0;
   $('hold').textContent = holding ? 'Schrittfolge fortsetzen' : 'Position halten';
@@ -153,9 +158,9 @@ $('frequency').oninput = e => { model.frequency = Number(e.target.value); model.
 $('speed').oninput = e => { speed = 10 ** Number(e.target.value); readouts(); };
 $('power').onclick = () => {
   model.powered = !model.powered; setRunning(false); settling = true;
-  $('power').textContent = model.powered ? 'Bestromt · stromlos schalten' : 'Stromlos · bestromen';
+  $('power').textContent = model.powered ? 'Strom ausschalten' : 'Strom einschalten';
   $('power').setAttribute('aria-pressed', String(model.powered));
-  $('power-note').textContent = model.powered ? 'Haltestrom aktiv. Start setzt die Schrittfolge fort; Einzelschritte sind ebenfalls möglich.' : 'Beide Phasen sind stromlos. Ein bewegter Rotor läuft gedämpft aus; ein stehender bleibt ohne äußere Kraft stehen. Kein magnetisches Haltemoment im Modell.';
+  $('power-note').textContent = model.powered ? 'Haltestrom aktiv. Start setzt die Schritte fort.' : 'Stromlos: kein Haltemoment. Rotor läuft aus.';
   for (const id of ['play', 'step', 'step-back', 'hold']) $(id).disabled = !model.powered;
   snapshot(); readouts();
 };
@@ -163,7 +168,7 @@ $('zero').onclick = () => {
   const powered = model.powered; model.reset(); model.powered = powered;
   $('mode').value = model.mode; $('frequency').value = model.frequency;
   holding = false; $('hold').textContent = 'Position halten'; $('hold').setAttribute('aria-pressed', 'false');
-  $('direction').textContent = '↻ Drehrichtung umkehren';
+  $('direction').textContent = '↻ Richtung umkehren';
   setRunning(false); history.length = 0; sampleClock = 0; snapshot(); readouts();
 };
 $('reset').onclick = stage.resetCamera;
@@ -180,15 +185,16 @@ function preset(kind) {
 }
 document.querySelectorAll('[data-preset]').forEach(button => { button.onclick = () => preset(button.dataset.preset); });
 const lessons = [
-  ['Der Strom bestimmt das Ziel.', 'A und B erzeugen zueinander senkrechte Feldbeiträge. Ihre Summe zeigt die magnetische Sollrichtung.'],
-  ['Das Feld springt. Der Rotor folgt.', 'Ein Steuerimpuls verändert die Ströme. Das Feld nimmt eine neue Richtung ein und das Drehmoment beschleunigt den Rotor dorthin. Mikroschritte verkleinern diese Sollwinkelschritte.'],
-  ['Stillstand ist nicht stromlos.', 'Zum Halten bleiben die Wicklungen bestromt. Eine kleine Auslenkung erzeugt ein rückstellendes Drehmoment. Stromlos entfällt dieses Haltemoment; der Rotor wird nicht automatisch auf null zurückgestellt.'],
+  ['Sollfeld', 'Die Ströme A und B bestimmen die Sollrichtung.'],
+  ['Schritt', 'Ein Impuls dreht das Sollfeld. Der Rotor folgt.'],
+  ['Halten', 'Haltestrom hält die Position. Stromlos entfällt das Haltemoment.'],
 ];
 document.querySelectorAll('[data-lesson]').forEach(button => { button.onclick = () => {
-  const i = Number(button.dataset.lesson); $('lesson-number').textContent = `DAS PRINZIP / 0${i + 1}`;
+  const i = Number(button.dataset.lesson); $('lesson-number').textContent = `PRINZIP / 0${i + 1}`;
   $('lesson-title').textContent = lessons[i][0]; $('lesson-text').textContent = lessons[i][1];
   document.querySelectorAll('[data-lesson]').forEach(item => item.classList.toggle('active', item === button));
 }; });
+createControlHelp();
 const format = value => value.toLocaleString('de-DE', { maximumFractionDigits: 2 });
 function readouts() {
   $('frequency-value').textContent = `${model.frequency} Schritte/s`;
@@ -197,7 +203,7 @@ function readouts() {
   $('mode-note').textContent = modes[model.mode].note;
   $('electron-density-value').textContent = `${$('electron-density').value} / Leiterweg`;
   $('electron-size-value').textContent = `${$('electron-size').value} %`;
-  $('electron-drift-value').textContent = `${$('electron-drift').value} × Lehrmaßstab`;
+  $('electron-drift-value').textContent = `${$('electron-drift').value} ×`;
   $('explode-value').textContent = `${$('explode').value} %`;
 }
 for (const id of ['electron-density', 'electron-size', 'electron-drift', 'explode']) $(id).oninput = readouts;

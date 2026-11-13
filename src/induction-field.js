@@ -1,10 +1,16 @@
+import { statorWinding, effectiveTurns } from './stator-winding.js';
+import { IronField } from './induction-iron.js';
+import { electricField } from './induction-electric.js';
+
 // Dimensionless 3D example machine, not a calibrated motor or a FEM solution.
 const TAU = Math.PI * 2;
 const NX = 19, NZ = 15, XY = 2.6, Z = 2.1;
 const COUNT = NX * NX * NZ;
 const index = (x, y, z) => ((z * NX + y) * NX + x) * 3;
 
-export const fieldDefaults = { iron: true, reaction: true, inductance: true, ends: true, saturation: true, slots: true, skew: true };
+export const fieldDefaults = { iron: true, statorIron: true, rotorIron: true, reaction: true, inductance: true, ends: true, saturation: false, slots: true, skew: true };
+
+export const materialKey = options => JSON.stringify(['ends', 'skew', 'distributed', 'slots', 'statorIron', 'rotorIron', 'saturation', 'reaction'].map(key => options[key]));
 
 function segment(list, a, b, weight = 1) {
   list.push([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2, (b[0] - a[0]) * weight, (b[1] - a[1]) * weight, (b[2] - a[2]) * weight]);
@@ -13,6 +19,10 @@ function segment(list, a, b, weight = 1) {
 function sources(options) {
   const result = Array.from({ length: 5 }, () => []);
   for (let k = 0; k < 3; k++) {
+    if (options.distributed) {
+      for (const s of statorWinding(k).segments) if (!s.end || options.ends) segment(result[k], s.a, s.b);
+      continue;
+    }
     const a = k * TAU / 3 + Math.PI / 2, radius = 1.3 + k * .035, depth = 1.09 + k * .12;
     const point = (angle, z) => [radius * Math.cos(angle), radius * Math.sin(angle), z];
     for (let side = 0; side < 2; side++) {
@@ -54,38 +64,48 @@ function interpolate(grid, x, y, z, out) {
   out.fill(0);
   if (gx < 0 || gx >= NX - 1 || gy < 0 || gy >= NX - 1 || gz < 0 || gz >= NZ - 1) return out;
   const ix = Math.floor(gx), iy = Math.floor(gy), iz = Math.floor(gz), u = gx - ix, v = gy - iy, w = gz - iz;
-  for (let dz = 0; dz < 2; dz++) for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) {
-    const weight = (dx ? u : 1 - u) * (dy ? v : 1 - v) * (dz ? w : 1 - w), p = index(ix + dx, iy + dy, iz + dz);
-    for (let k = 0; k < 3; k++) out[k] += grid[p + k] * weight;
+  const p = index(ix, iy, iz), row = NX * 3, layer = NX * NX * 3;
+  for (let k = 0; k < 3; k++) {
+    const lower = (grid[p + k] * (1 - u) + grid[p + k + 3] * u) * (1 - v) + (grid[p + row + k] * (1 - u) + grid[p + row + k + 3] * u) * v;
+    const upper = (grid[p + layer + k] * (1 - u) + grid[p + layer + k + 3] * u) * (1 - v) + (grid[p + layer + row + k] * (1 - u) + grid[p + layer + row + k + 3] * u) * v;
+    out[k] = lower * (1 - w) + upper * w;
   }
   return out;
 }
 
 export class InductionField {
   constructor() {
-    this.options = { ...fieldDefaults };
+    this.options = { ...fieldDefaults, distributed: true };
     this.grid = new Float32Array(COUNT * 3);
     this.basis = null;
     this.state = { phase: 0, rotorAngle: 0, frequency: 50, slip: .05, gain: 1, direction: 1 };
     this.rotorAmplitude = this.lag = 0;
     this.scratch = new Float64Array(3);
-    this.nodes = [];
-    // Local spherical-inclusion polarizability; no self-consistent iron boundary solve.
-    for (const rotor of [false, true]) for (const z of [-.62, 0, .62]) {
-      const n = rotor ? 8 : 16, r = rotor ? .58 : 1.4;
-      const volume = rotor ? Math.PI * .96 ** 2 * 1.85 / 24 : Math.PI * (1.57 ** 2 - 1.22 ** 2) * 1.9 / 48;
-      for (let i = 0; i < n; i++) {
-        const angle = TAU * (i + .25) / n;
-        this.nodes.push({ x: r * Math.cos(angle), y: r * Math.sin(angle), z, rotor, angle, alpha: 3 * volume / (4 * Math.PI) * (1200 - 1) / (1200 + 2), moment: new Float64Array(3) });
-      }
-    }
     this.points = new Float32Array(COUNT * 3);
     for (let z = 0; z < NZ; z++) for (let y = 0; y < NX; y++) for (let x = 0; x < NX; x++) this.points.set([-XY + 2 * XY * x / (NX - 1), -XY + 2 * XY * y / (NX - 1), -Z + 2 * Z * z / (NZ - 1)], index(x, y, z));
+    this.iron = new IronField(interpolate);
+    this.material = null;
+    this.materialCache = null;
+    this.configurations = new Map();
+    this.source = new Float32Array(COUNT * 3);
+    this.shifted = new Float32Array(COUNT * 3);
+    this.electric = new Float32Array(COUNT * 3);
+    this.electricRhs = new Float32Array(COUNT * 3);
   }
 
   configure(options) {
-    if (options.ends !== this.options.ends || options.skew !== this.options.skew) this.basis = null;
+    const previousKey = materialKey(this.options);
+    if (this.materialCache) {
+      this.configurations.delete(previousKey);
+      this.configurations.set(previousKey, { basis: this.basis, materialCache: this.materialCache });
+      // Bound memory when exploring many nonstandard winding/material combinations.
+      if (this.configurations.size > 6) this.configurations.delete(this.configurations.keys().next().value);
+    }
+    if (['ends', 'skew', 'distributed'].some(key => key in options && options[key] !== this.options[key])) this.basis = null;
+    if (['ends', 'skew', 'distributed', 'slots', 'statorIron', 'rotorIron', 'saturation', 'reaction'].some(key => key in options && options[key] !== this.options[key])) this.materialCache = null;
     Object.assign(this.options, options);
+    const cached = this.configurations.get(materialKey(this.options));
+    if (cached) { this.basis = cached.basis; this.materialCache = cached.materialCache; }
   }
 
   prepare() {
@@ -126,39 +146,100 @@ export class InductionField {
     return out;
   }
 
-  update(state) {
-    this.prepare();
+  setState(state) {
     Object.assign(this.state, state);
     const omega = TAU * state.frequency * state.slip * state.direction;
     const tau = this.options.inductance ? .045 : 0;
     this.lag = Math.atan(omega * tau);
     // Steady-state R-L response in rotor coordinates; R, coupling and L are example parameters.
-    this.rotorAmplitude = state.gain * .006 * omega / Math.hypot(1, omega * tau);
-    const value = new Float64Array(3);
-    if (this.options.iron) for (const node of this.nodes) {
-      this.applied(node.x, node.y, node.z, value);
-      const length = Math.hypot(...value);
-      const saturation = this.options.saturation && length > 1e-9 ? 2.2 * Math.tanh(length / 2.2) / length : 1;
-      const tooth = this.options.slots ? 1 - .2 * (1 + Math.cos((node.rotor ? 22 : 12) * (node.angle - (node.rotor ? state.rotorAngle : 0)))) / 2 : 1;
-      for (let k = 0; k < 3; k++) node.moment[k] = value[k] * node.alpha * saturation * tooth;
+    this.rotorAmplitude = state.gain * (this.options.distributed ? effectiveTurns : 1) * .006 * omega / Math.hypot(1, omega * tau);
+  }
+
+  prepareMaterial() {
+    if (this.materialCache) return;
+    const response = (phase, rotorAngle, rotor) => {
+      Object.assign(this.state, { phase, rotorAngle, gain: rotor ? 0 : 1 });
+      this.rotorAmplitude = rotor ? 1 : 0; this.lag = 0;
+      const value = new Float64Array(3), grid = new Float32Array(COUNT * 3);
+      for (let p = 0; p < grid.length; p += 3) {
+        this.applied(this.points[p], this.points[p + 1], this.points[p + 2], value);
+        this.source.set(value, p);
+      }
+      this.iron.solve(this.source, grid, this.options, this.points);
+      return { grid, material: this.iron.grid.slice() };
+    };
+    // Linear material response: two stator phases, plus periodic rotor-position samples.
+    // Interpolating one bar pitch preserves the resolved stationary stator geometry.
+    const stator = [response(0, 0, false), response(Math.PI / 2, 0, false)];
+    const rotor = this.options.reaction ? Array.from({ length: 8 }, (_, i) => [response(0, i * TAU / (22 * 8), true), response(Math.PI / 2, i * TAU / (22 * 8), true)]) : null;
+    this.materialCache = { stator, rotor };
+  }
+
+  magnetic(state, out) {
+    this.prepare();
+    const material = this.options.iron && (this.options.statorIron || this.options.rotorIron);
+    if (material && !this.options.saturation) {
+      this.prepareMaterial(); this.setState(state);
+      const { stator, rotor } = this.materialCache;
+      const terms = [[stator[0], state.gain * Math.cos(state.phase)], [stator[1], state.gain * Math.sin(state.phase)]];
+      if (this.options.reaction) {
+        const position = ((state.rotorAngle / (TAU / 22) % 1 + 1) % 1) * rotor.length;
+        const lower = Math.floor(position), fraction = position - lower, phase = state.phase - this.lag;
+        for (let side = 0; side < 2; side++) for (let mode = 0; mode < 2; mode++) terms.push([
+          rotor[(lower + side) % rotor.length][mode],
+          this.rotorAmplitude * (mode ? Math.sin(phase) : Math.cos(phase)) * (side ? fraction : 1 - fraction),
+        ]);
+      }
+      out.fill(0); this.iron.grid.fill(0);
+      for (const [basis, weight] of terms) {
+        for (let p = 0; p < out.length; p++) out[p] += basis.grid[p] * weight;
+        for (let p = 0; p < this.iron.grid.length; p++) this.iron.grid[p] += basis.material[p] * weight;
+      }
+      this.materialTerms = terms;
+      return;
     }
-    for (let p = 0; p < this.grid.length; p += 3) {
+    this.setState(state);
+    const value = new Float64Array(3);
+    for (let p = 0; p < this.source.length; p += 3) {
       const x = this.points[p], y = this.points[p + 1], z = this.points[p + 2];
       this.applied(x, y, z, value);
-      if (this.options.iron) for (const n of this.nodes) {
-        const rx = x - n.x, ry = y - n.y, rz = z - n.z;
-        // Finite-size regularization avoids point-dipole and filament singularities.
-        const r2 = rx * rx + ry * ry + rz * rz + .16 ** 2, f = 1 / (r2 * Math.sqrt(r2));
-        const dot = (rx * n.moment[0] + ry * n.moment[1] + rz * n.moment[2]) * 3 / r2;
-        value[0] += (rx * dot - n.moment[0]) * f;
-        value[1] += (ry * dot - n.moment[1]) * f;
-        value[2] += (rz * dot - n.moment[2]) * f;
-      }
-      this.grid.set(value, p);
+      this.source.set(value, p);
     }
+    if (material) this.iron.solve(this.source, out, this.options, this.points);
+    else out.set(this.source);
+  }
+
+  update(state) {
+    this.magnetic(state, this.grid);
+    const currentTerms = this.materialTerms;
+    this.material = this.options.iron && (this.options.statorIron || this.options.rotorIron) ? this.iron.grid.slice() : null;
+    this.electric.fill(0);
+    if (!this.options.electric || !state.frequency) return;
+    const phaseStep = .005, dt = phaseStep / (TAU * state.frequency * state.direction);
+    this.magnetic({ ...state, phase: state.phase + phaseStep, rotorAngle: state.rotorAngle + phaseStep * (1 - state.slip) }, this.shifted);
+    Object.assign(this.state, state);
+    if (this.material && !this.options.saturation) {
+      const bases = [...this.materialCache.stator, ...(this.materialCache.rotor?.flat() || [])];
+      const zero = new Float32Array(COUNT * 3);
+      for (const basis of bases) if (!basis.electric) {
+        basis.electric = new Float32Array(COUNT * 3);
+        electricField(zero, basis.grid, 1, basis.electric, this.electricRhs, NX, NZ, [2 * XY / (NX - 1), 2 * XY / (NX - 1), 2 * Z / (NZ - 1)]);
+      }
+      const weights = new Map();
+      for (const [basis, weight] of currentTerms) weights.set(basis, (weights.get(basis) || 0) - weight);
+      for (const [basis, weight] of this.materialTerms) weights.set(basis, (weights.get(basis) || 0) + weight);
+      for (const [basis, weight] of weights) for (let p = 0; p < this.electric.length; p++) this.electric[p] += basis.electric[p] * (weight / dt);
+      return;
+    }
+    electricField(this.grid, this.shifted, dt, this.electric, this.electricRhs, NX, NZ, [2 * XY / (NX - 1), 2 * XY / (NX - 1), 2 * Z / (NZ - 1)]);
   }
 
   sample(x, y, z, out = new Float64Array(3)) {
-    return interpolate(this.grid, x, y, z, out);
+    interpolate(this.grid, x, y, z, out);
+    return this.material ? this.iron.sample(this.material, x, y, z, out) : out;
+  }
+
+  sampleElectric(x, y, z, out = new Float64Array(3)) {
+    return interpolate(this.electric, x, y, z, out);
   }
 }

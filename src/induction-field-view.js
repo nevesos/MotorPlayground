@@ -1,22 +1,28 @@
 import * as THREE from 'three';
 import { InductionField } from './induction-field.js';
+import { FIELD_LINES as LINES, FIELD_STEPS as STEPS } from './field-lines.js';
 
-const TAU = Math.PI * 2, LINES = 24, STEPS = 95;
+const TAU = Math.PI * 2;
 
 export function createInductionFieldView(parent) {
   const model = new InductionField();
   const group = new THREE.Group(); parent.add(group); group.visible = false;
-  const geometry = new THREE.BufferGeometry();
-  const positions = new Float32Array(LINES * STEPS * 4 * 3), colors = new Float32Array(positions.length);
-  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3).setUsage(THREE.DynamicDrawUsage));
-  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3).setUsage(THREE.DynamicDrawUsage));
-  const lines = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: .85 }));
-  lines.frustumCulled = false; group.add(lines);
-  const arrows = [], currents = [], forces = [];
-  for (let i = 0; i < LINES; i++) {
-    const arrow = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(), .16, 0xd8f88a, .07, .04);
-    group.add(arrow); arrows.push(arrow);
+  function lineOverlay() {
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(LINES * STEPS * 4 * 3), colors = new Float32Array(positions.length);
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3).setUsage(THREE.DynamicDrawUsage));
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3).setUsage(THREE.DynamicDrawUsage));
+    const lines = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: .85 }));
+    lines.frustumCulled = false; group.add(lines);
+    const arrows = [];
+    for (let i = 0; i < LINES; i++) {
+      const arrow = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(), .16, 0xd8f88a, .07, .04);
+      group.add(arrow); arrows.push(arrow);
+    }
+    return { geometry, positions, colors, lines, arrows };
   }
+  const magneticLines = lineOverlay(), electricLines = lineOverlay();
+  const currents = [], forces = [];
   for (let i = 0; i < 22; i++) {
     for (const [list, color] of [[currents, 0x6edbff], [forces, 0xffd16e]]) {
       const arrow = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(), .4, color, .1, .06);
@@ -27,56 +33,87 @@ export function createInductionFieldView(parent) {
   planeGeometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(planeGeometry.attributes.position.count * 3), 3));
   const plane = new THREE.Mesh(planeGeometry, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide, transparent: true, opacity: .5, depthWrite: false }));
   group.add(plane);
-  const color = new THREE.Color(), vector = new THREE.Vector3(), b = new Float64Array(3), mid = new Float64Array(3);
-  let last = -Infinity, previous = '';
+  const color = new THREE.Color(), vector = new THREE.Vector3(), b = new Float64Array(3);
+  let last = -Infinity, previous = '', requested = '', config = '', version = 0;
+  let worker, busy = false, ready = false, spare = null, spareElectric = null, failure = '';
+
+  function startWorker() {
+    try {
+      worker = new Worker(new URL('./induction-field-worker.js', import.meta.url), { type: 'module' });
+      worker.onmessage = ({ data }) => {
+        busy = false;
+        // A changed winding or option must not briefly show the old configuration.
+        if (data.config !== config) { spare = data.grid.buffer; spareElectric = data.electric.buffer; return; }
+        spare = model.grid.buffer;
+        spareElectric = model.electric.buffer;
+        model.grid = data.grid;
+        model.electric = data.electric;
+        model.material = data.material;
+        model.traces = data.traces;
+        model.state = data.state;
+        model.lag = data.lag;
+        model.rotorAmplitude = data.rotorAmplitude;
+        ready = true; version++;
+      };
+      worker.onerror = event => {
+        event.preventDefault();
+        failure = 'Feldberechnung nicht verfügbar. Lehrmodus bleibt nutzbar.';
+        ready = busy = false;
+        worker.terminate();
+      };
+    } catch {
+      failure = 'Feldberechnung nicht verfügbar. Lehrmodus bleibt nutzbar.';
+    }
+  }
 
   function fieldColor(strength) {
     // Fixed relative scale: changing load or connection does not renormalize the colors.
     return color.setHSL(.64 - .62 * Math.min(1, Math.log1p(strength) / Math.log(5)), .8, .56);
   }
 
+  startWorker();
+
   return {
     model,
+    get ready() { return ready; },
+    get error() { return failure; },
     update(state, options, settings, now) {
-      group.visible = settings.enabled && state.explode === 0;
-      if (!settings.enabled) return;
-      const key = JSON.stringify([state, options, settings]);
-      if (key === previous || (now - last < 100 && previous !== '')) return;
-      last = now; previous = key;
-      model.configure(options); model.update(state);
-      let count = 0;
-      for (let i = 0; i < LINES; i++) {
-        const angle = i % 8 * TAU / 8 + state.phase, radius = .45 + (i % 2) * .35;
-        const seed = [radius * Math.cos(angle), radius * Math.sin(angle), (Math.floor(i / 8) - 1) * .72];
-        model.sample(...seed, b);
-        const strength = Math.hypot(...b);
-        arrows[i].visible = strength > .015;
-        arrows[i].position.set(...seed);
-        arrows[i].setDirection(vector.set(...b).normalize());
-        arrows[i].setColor(fieldColor(strength));
-        for (const sign of [-1, 1]) {
-          let [x, y, z] = seed;
-          for (let step = 0; step < STEPS; step++) {
-            model.sample(x, y, z, b);
-            const length = Math.hypot(...b);
-            if (length < .015) break;
-            const h = sign * .065 / length;
-            model.sample(x + b[0] * h / 2, y + b[1] * h / 2, z + b[2] * h / 2, mid);
-            const m = Math.hypot(...mid);
-            if (m < .015) break;
-            const nx = x + sign * .065 * mid[0] / m, ny = y + sign * .065 * mid[1] / m, nz = z + sign * .065 * mid[2] / m;
-            if (Math.abs(nx) > 2.5 || Math.abs(ny) > 2.5 || Math.abs(nz) > 2) break;
-            positions.set([x, y, z, nx, ny, nz], count * 3);
-            fieldColor(length);
-            for (let end = 0; end < 2; end++) colors.set([color.r, color.g, color.b], (count + end) * 3);
-            count += 2; x = nx; y = ny; z = nz;
-            if (step > 20 && Math.hypot(x - seed[0], y - seed[1], z - seed[2]) < .07) break;
-          }
-        }
+      group.visible = false;
+      if (!settings.enabled || state.explode !== 0 || failure) return;
+      options = { ...options, magneticLines: settings.lines && settings.magnetic };
+      const nextConfig = JSON.stringify(options);
+      if (nextConfig !== config) { config = nextConfig; ready = false; requested = ''; }
+      if (!worker) startWorker();
+      if (failure) return;
+      const request = JSON.stringify([state, options]);
+      // Only one job in flight: subsequent frames submit the latest state, never a backlog.
+      if (!busy && request !== requested && now - last >= 1000 / 30 - .5) {
+        busy = true; last = now; requested = request;
+        worker.postMessage({ state, options, config, buffer: spare, electricBuffer: spareElectric }, [spare, spareElectric].filter(Boolean));
+        spare = spareElectric = null;
       }
-      geometry.setDrawRange(0, count); geometry.attributes.position.needsUpdate = geometry.attributes.color.needsUpdate = true;
-      lines.visible = settings.lines && settings.magnetic;
-      for (const arrow of arrows) arrow.visible = arrow.visible && settings.lines && settings.magnetic;
+      if (!ready) return;
+      group.visible = true;
+      const key = JSON.stringify([version, settings]);
+      if (key === previous) return;
+      previous = key;
+      state = model.state;
+      for (const isElectric of [false, true]) {
+        const { geometry, positions, colors, lines, arrows } = isElectric ? electricLines : magneticLines;
+        const enabled = isElectric ? settings.electric : settings.lines && settings.magnetic;
+        const trace = model.traces[isElectric ? 1 : 0];
+        positions.set(trace.positions); colors.set(trace.colors);
+        for (let i = 0; i < LINES; i++) {
+          const p = i * 7, strength = trace.arrows[p + 6];
+          arrows[i].visible = enabled && strength > 0;
+          if (!arrows[i].visible) continue;
+          arrows[i].position.fromArray(trace.arrows, p);
+          arrows[i].setDirection(vector.fromArray(trace.arrows, p + 3));
+          arrows[i].setColor(isElectric ? color.setHex(0xd8a0ff) : fieldColor(strength));
+        }
+        geometry.setDrawRange(0, trace.count); geometry.attributes.position.needsUpdate = geometry.attributes.color.needsUpdate = true;
+        lines.visible = enabled;
+      }
       for (let i = 0; i < 22; i++) {
         const angle = i * TAU / 22 + state.rotorAngle;
         const x = 1.005 * Math.cos(angle), y = 1.005 * Math.sin(angle), current = model.rotorCurrent(angle);

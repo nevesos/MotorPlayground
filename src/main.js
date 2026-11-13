@@ -2,6 +2,9 @@ import * as THREE from 'three';
 import { createStage, material, ringGeometry, textSprite, electronTexture, canvasContext, arrow2d } from './lab-view.js';
 import { createInductionFieldView } from './induction-field-view.js';
 import { fieldDefaults } from './induction-field.js';
+import { statorWinding, statorSlots, statorSlotAngle } from './stator-winding.js';
+import { createPartOpacityControls } from './part-opacity.js';
+import { createControlHelp } from './control-help.js';
 import './style.css';
 
 const $ = id => document.getElementById(id);
@@ -19,6 +22,7 @@ const pickables = [];
 const parts = [];
 const steel = material(0x758896);
 const darkSteel = material(0x334853);
+const statorSteel = darkSteel.clone(), laminationSteel = steel.clone();
 const copper = material(0xe4ad70, { metalness: .82, roughness: .28 });
 function part(name, description, offset = 0) {
   const group = new THREE.Group(); group.userData = { name, description, offset }; motor.add(group); parts.push(group); return group;
@@ -33,9 +37,24 @@ function ring(outer, inner, length, mat, parent, z = 0) {
   return mesh(ringGeometry(outer, inner, length), mat, parent, z);
 }
 const stator = part('Stator · Blechpaket', 'Der feststehende Eisenkern bündelt das Magnetfeld. Dünne isolierte Bleche begrenzen Wirbelstromverluste.');
-ring(1.57, 1.22, 1.9, darkSteel, stator);
-for (let z = -.9; z <= .91; z += .12) ring(1.59, 1.48, .025, steel, stator, z);
-const winding = part('Drehstromwicklung', 'U, V und W sind räumlich um 120° versetzt. Die gegenüberliegenden Spulenseiten haben entgegengesetzte Stromrichtungen.');
+const simpleCore = ring(1.57, 1.22, 1.9, statorSteel, stator);
+const coreShape = new THREE.Shape(); coreShape.absarc(0, 0, 1.57, 0, TAU, false);
+const slotHole = new THREE.Path();
+for (let i = 0; i < statorSlots; i++) {
+  const a = statorSlotAngle(-i), halfWidth = .055;
+  const p = (angle, radius) => [radius * Math.cos(angle), radius * Math.sin(angle)];
+  if (i === 0) slotHole.moveTo(...p(a + halfWidth, 1.22));
+  slotHole.lineTo(...p(a + halfWidth, 1.46));
+  slotHole.lineTo(...p(a - halfWidth, 1.46));
+  slotHole.lineTo(...p(a - halfWidth, 1.22));
+  slotHole.absarc(0, 0, 1.22, a - halfWidth, a - TAU / statorSlots + halfWidth, true);
+}
+slotHole.closePath(); coreShape.holes.push(slotHole);
+const slottedGeometry = new THREE.ExtrudeGeometry(coreShape, { depth: 1.9, bevelEnabled: false, curveSegments: 64 });
+slottedGeometry.translate(0, 0, -.95);
+const slottedCore = mesh(slottedGeometry, statorSteel, stator);
+for (let z = -.9; z <= .91; z += .12) ring(1.59, 1.48, .025, laminationSteel, stator, z);
+const winding = part('Drehstromwicklung', 'Drei Phasen, um 120° versetzt. Verteilt: zwölf Windungen je Phase in 18 Nuten.');
 const coils = [];
 for (let phaseIndex = 0; phaseIndex < 3; phaseIndex++) {
   const a = phaseIndex * TAU / 3 + Math.PI / 2, radius = 1.3 + phaseIndex * .035;
@@ -48,10 +67,19 @@ for (let phaseIndex = 0; phaseIndex < 3; phaseIndex++) {
   path.add(new THREE.LineCurve3(point(a + Math.PI, z), point(a + Math.PI, -z)));
   path.add(new THREE.CatmullRomCurve3(Array.from({ length: 33 }, (_, j) => point(a + Math.PI + j / 32 * (Math.PI - .2), -z))));
   const mat = material(colors[phaseIndex], { emissive: colors[phaseIndex], emissiveIntensity: .15, roughness: .3 });
-  mesh(new THREE.TubeGeometry(path, 160, .065, 8, false), mat, winding);
-  coils.push({ mat, phase: phaseIndex, radius, path });
+  const body = new THREE.Group(); winding.add(body);
+  mesh(new THREE.TubeGeometry(path, 160, .065, 8, false), mat, body);
+  coils.push({ mat, phase: phaseIndex, radius, path, body, distributed: false });
 }
-const terminals = part('Klemmenkasten · Sternschaltung', 'L1 → U1, L2 → V1, L3 → W1. Die Wicklungsenden U2, V2 und W2 sind über die Messingbrücke zum Sternpunkt verbunden. Ein Neutralleiter ist nicht angeschlossen. PE ist der Schutzleiter, kein Betriebsstrompfad.');
+for (let phaseIndex = 0; phaseIndex < 3; phaseIndex++) {
+  const layout = statorWinding(phaseIndex), path = new THREE.CurvePath();
+  for (const s of layout.segments) path.add(new THREE.LineCurve3(new THREE.Vector3(...s.a), new THREE.Vector3(...s.b)));
+  const mat = material(colors[phaseIndex], { emissive: colors[phaseIndex], emissiveIntensity: .15, roughness: .3 });
+  const body = new THREE.Group(); winding.add(body);
+  mesh(new THREE.TubeGeometry(path, 1536, .016, 6, false), mat, body);
+  coils.push({ mat, phase: phaseIndex, path, body, distributed: true, sides: layout.sides });
+}
+const terminals = part('Klemmenkasten · Sternschaltung', 'U2, V2 und W2 bilden den Sternpunkt. PE schützt das Gehäuse; kein Neutralleiter.');
 const terminalLabels = new THREE.Group(); terminals.add(terminalLabels);
 function label3d(text, position, color = '#edf4fa', width = .5) {
   const sprite = textSprite(text, position, color, width); terminalLabels.add(sprite);
@@ -77,13 +105,14 @@ const starLabel = label3d('STERN / Y', new THREE.Vector3(0, 2.17, .02), '#d8f88a
 const deltaLabel = label3d('DREIECK / Δ', new THREE.Vector3(0, 2.85, .02), '#d8f88a', 1);
 deltaLabel.visible = false;
 for (const coil of coils) {
+  coil.leads = new THREE.Group(); terminals.add(coil.leads);
   const start = coil.path.getPoint(0), end = coil.path.getPoint(1), finish = lower[(coil.phase + 1) % 3];
   const route = (from, to, offset) => new THREE.CatmullRomCurve3([from, new THREE.Vector3(from.x * 1.2, from.y * 1.2, from.z - .25), new THREE.Vector3(to.x + offset, 1.65, -.9 - coil.phase * .18), to]);
   const inlet = route(start, upper[coil.phase], -.12), outlet = route(end, finish, .12);
-  for (const path of [inlet, outlet]) mesh(new THREE.TubeGeometry(path, 40, .025, 8, false), coil.mat, terminals);
+  for (const path of [inlet, outlet]) mesh(new THREE.TubeGeometry(path, 40, .025, 8, false), coil.mat, coil.leads);
   const incoming = new THREE.CatmullRomCurve3([...inlet.points].reverse());
   coil.inlet = incoming; coil.outlet = outlet;
-  label3d(['U', 'V', 'W'][coil.phase], new THREE.Vector3(Math.cos(coil.phase * TAU / 3 + Math.PI / 2) * 1.55, Math.sin(coil.phase * TAU / 3 + Math.PI / 2) * 1.55, 1.35), cssColors[coil.phase], .3);
+  if (!coil.distributed) label3d(['U', 'V', 'W'][coil.phase], new THREE.Vector3(Math.cos(coil.phase * TAU / 3 + Math.PI / 2) * 1.55, Math.sin(coil.phase * TAU / 3 + Math.PI / 2) * 1.55, 1.35), cssColors[coil.phase], .3);
 }
 const pe = new THREE.Vector3(1.03, 2.18, -.12);
 cylinder(.065, .12, material(0x9bd654), terminals).position.copy(pe);
@@ -92,16 +121,21 @@ label3d('PE', new THREE.Vector3(1.15, 2.39, .03), '#d8f88a', .32);
 const rotorPart = part('Rotor · Kurzschlusskäfig', 'Das Drehfeld induziert axiale Ströme in den Käfigstäben. Die Endringe schließen die Strompfade. Der Rotor dreht etwas langsamer als das Feld: Schlupf.', 1.6);
 const rotor = new THREE.Group(); rotorPart.add(rotor);
 const rotorCore = cylinder(.96, 1.85, material(0x687782, { roughness: .55 }), rotor);
+const rotorCage = new THREE.Group(); rotor.add(rotorCage);
 const bars = [];
 for (let i = 0; i < 22; i++) {
   const a = i * TAU / 22;
-  const bar = cylinder(.047, 2.04, copper, rotor);
+  const bar = cylinder(.047, 2.04, copper, rotorCage);
   bar.position.x = Math.cos(a) * 1.005; bar.position.y = Math.sin(a) * 1.005;
   bars.push(bar);
 }
-ring(1.065, .9, .12, copper, rotor, -1.02); ring(1.065, .9, .12, copper, rotor, 1.02);
+ring(1.065, .9, .12, copper, rotorCage, -1.02); ring(1.065, .9, .12, copper, rotorCage, 1.02);
 const shaft = part('Welle', 'Die Welle überträgt das elektromagnetische Drehmoment an die angeschlossene Maschine.', 1.6);
 cylinder(.19, 4.5, steel, shaft);
+const shaftKey = mesh(new THREE.BoxGeometry(.075, .06, .55), material(0xc6d0d8), shaft, 1.92);
+shaftKey.position.y = .19;
+const shaftMark = mesh(new THREE.BoxGeometry(.14, .035, .012), darkSteel, shaft, 2.256);
+shaftMark.position.x = .06;
 const housing = part('Motorgehäuse', 'Das Gehäuse schützt den Motor. Die Kühlrippen vergrößern die Oberfläche für die Wärmeabgabe.', -1.1);
 ring(1.78, 1.64, 2.25, material(0x526b7c, { transparent: true, opacity: .45, depthWrite: false }), housing);
 for (let i = 0; i < 24; i++) {
@@ -110,9 +144,9 @@ for (let i = 0; i < 24; i++) {
   fin.position.set(Math.cos(a) * 1.82, Math.sin(a) * 1.82, 0); fin.rotation.z = a - Math.PI / 2;
 }
 const front = part('Lagerschild vorn', 'Das Lagerschild trägt das Wellenlager und hält den Rotor präzise im Luftspalt.', 3.3);
-ring(1.64, .31, .16, steel, front, 1.3); ring(.34, .2, .25, copper, front, 1.3);
+ring(1.64, .31, .16, steel, front, 1.65); ring(.34, .2, .25, copper, front, 1.65);
 const rear = part('Lagerschild hinten', 'Zweites Wellenlager und rückwärtiger Abschluss des Motors.', -3.3);
-ring(1.64, .31, .16, steel, rear, -1.3); ring(.34, .2, .25, copper, rear, -1.3);
+ring(1.64, .31, .16, steel, rear, -1.65); ring(.34, .2, .25, copper, rear, -1.65);
 housing.visible = false; front.visible = rear.visible = false;
 
 const magnetic = new THREE.Group(); motor.add(magnetic);
@@ -131,7 +165,7 @@ const windingCurrents = new THREE.Group(); motor.add(windingCurrents);
 const conductorFields = new THREE.Group(); motor.add(conductorFields);
 const rotorFields = new THREE.Group(); rotorPart.add(rotorFields); rotorFields.visible = false;
 const conductorDisplays = [], phaseFields = [];
-function conductorDisplay(currentParent, fieldParent, color, radius, a, phaseIndex, side, rotating = false) {
+function conductorDisplay(currentParent, fieldParent, color, radius, a, phaseIndex, side, rotating = false, distributed = false) {
   const current = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(), 1, color, .15, .09);
   if (currentParent) currentParent.add(current);
   const field = new THREE.Group(); fieldParent.add(field);
@@ -144,10 +178,14 @@ function conductorDisplay(currentParent, fieldParent, color, radius, a, phaseInd
     field.add(arrow); arrows.push(arrow);
   }
   for (const arrow of [current, ...arrows]) for (const object of [arrow.line, arrow.cone]) { object.material.depthTest = false; object.material.depthWrite = false; object.renderOrder = 5; }
-  conductorDisplays.push({ current, field, rings, arrows, radius, a, phaseIndex, side, rotating });
+  conductorDisplays.push({ current, field, rings, arrows, radius, a, phaseIndex, side, rotating, distributed });
 }
 for (const coil of coils) {
   const axis = coil.phase * TAU / 3;
+  if (coil.distributed) {
+    for (const s of coil.sides) conductorDisplay(windingCurrents, conductorFields, colors[coil.phase], s.radius, s.angle, coil.phase, s.side, false, true);
+    continue;
+  }
   for (let side = 0; side < 2; side++) conductorDisplay(windingCurrents, conductorFields, colors[coil.phase], coil.radius, axis + Math.PI / 2 + side * Math.PI, coil.phase, side);
   const arrow = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 1.65), .7, colors[coil.phase], .15, .085);
   conductorFields.add(arrow); phaseFields.push({ arrow, axis });
@@ -160,8 +198,8 @@ const rotorElectronPaths = new THREE.Group(); rotor.add(rotorElectronPaths); rot
 const flows = [];
 const suppliedElectronTexture = electronTexture(false), inducedElectronTexture = electronTexture(true);
 const electronPosition = new THREE.Vector3();
-function electronFlow(path, parent, pathParent, color, phaseIndex, rotating = false, weights = null, mode = null) {
-  const samples = path.getSpacedPoints(512);
+function electronFlow(path, parent, pathParent, color, phaseIndex, rotating = false, weights = null, mode = null, distributed = null) {
+  const samples = path.getSpacedPoints(distributed ? 4096 : 512);
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(68 * 3), 3).setUsage(THREE.DynamicDrawUsage));
   const mat = new THREE.PointsMaterial({ map: rotating ? inducedElectronTexture : suppliedElectronTexture, size: .4, transparent: true, alphaTest: .1, depthTest: true, depthWrite: false });
@@ -170,13 +208,13 @@ function electronFlow(path, parent, pathParent, color, phaseIndex, rotating = fa
   const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(samples), new THREE.LineBasicMaterial({ color, transparent: true, opacity: .35, depthTest: false, depthWrite: false }));
   line.renderOrder = 6; pathParent.add(line);
   const closed = rotating;
-  flows.push({ particles, line, samples, length: path.getLength(), phaseIndex, rotating, closed, weights, mode, drift: 0 });
+  flows.push({ particles, line, samples, length: path.getLength(), phaseIndex, rotating, closed, weights, mode, distributed, drift: 0 });
 }
 const terminalElectrons = new THREE.Group(); terminals.add(terminalElectrons);
 const terminalElectronPaths = new THREE.Group(); terminals.add(terminalElectronPaths);
 for (const coil of coils) {
-  electronFlow(coil.path, statorElectrons, electronPaths, colors[coil.phase], coil.phase);
-  for (const path of [coil.inlet, coil.outlet]) electronFlow(path, terminalElectrons, terminalElectronPaths, colors[coil.phase], coil.phase);
+  electronFlow(coil.path, statorElectrons, electronPaths, colors[coil.phase], coil.phase, false, null, null, coil.distributed);
+  for (const path of [coil.inlet, coil.outlet]) electronFlow(path, terminalElectrons, terminalElectronPaths, colors[coil.phase], coil.phase, false, null, null, coil.distributed);
 }
 for (let i = 0; i < 3; i++) {
   // At each delta node the line supplies the difference of two winding currents.
@@ -258,7 +296,7 @@ function readouts() {
   $('torque-value').innerHTML = `${values.load} <small>%</small>`;
   const gain = windingGain(), delta = connection === 'delta';
   const volts = 400 / Math.sqrt(3) * gain, amps = volts / 100;
-  $('connection-values').innerHTML = `Netz: <b>400 V</b> · Wicklung: <b>${volts.toLocaleString('de-DE', { maximumFractionDigits: 1 })} V</b><br>Wicklungsstrom: <b>${amps.toFixed(2).replace('.', ',')} A</b> · Leiterstrom: <b>${(amps * (delta ? Math.sqrt(3) : 1)).toFixed(2).replace('.', ',')} A</b><br>B-Feld: <b>× ${gain.toFixed(2).replace('.', ',')}</b> · Kraft bei gleichem Schlupf: <b>× ${Math.round(gain * gain)}</b>`;
+  $('connection-values').innerHTML = `Wicklung: <b>${volts.toLocaleString('de-DE', { maximumFractionDigits: 1 })} V · ${amps.toFixed(2).replace('.', ',')} A</b><br>Leiter: <b>${(amps * (delta ? Math.sqrt(3) : 1)).toFixed(2).replace('.', ',')} A</b>`;
 }
 $('connection').addEventListener('change', e => {
   const old = connection; connection = e.target.value;
@@ -267,7 +305,7 @@ $('connection').addEventListener('change', e => {
   starBridge.visible = starLabel.visible = !delta; deltaBridges.visible = deltaLabel.visible = delta;
   $('terminal-diagram').classList.toggle('delta', delta);
   $('connection-heading').textContent = delta ? 'ANSCHLÜSSE / DREIECK' : 'ANSCHLÜSSE / STERN';
-  $('connection-description').textContent = delta ? 'Dreieck: U1–W2, V1–U2, W1–V2 senkrecht gebrückt. 400 V je Wicklung.' : 'Stern: U2–V2–W2 gebrückt, 231 V je Wicklung. Kein Neutralleiter.';
+  $('connection-description').textContent = delta ? 'Dreieck: U1–W2, V1–U2, W1–V2 gebrückt.' : 'Stern: U2–V2–W2 gebrückt.';
   $('terminal-diagram').setAttribute('aria-label', $('connection-description').textContent);
   terminals.userData.name = `Klemmenkasten · ${delta ? 'Dreieck' : 'Stern'}schaltung`;
   terminals.userData.description = $('connection-description').textContent;
@@ -275,52 +313,68 @@ $('connection').addEventListener('change', e => {
 });
 for (const id of Object.keys(values)) $(id).addEventListener('input', e => { values[id] = id === 'speed' ? 10 ** Number(e.target.value) : Number(e.target.value); readouts(); });
 for (const [id, group] of [['windings', winding], ['winding-currents', windingCurrents], ['conductor-fields', conductorFields], ['rotor-fields', rotorFields], ['magnetic', magnetic], ['electric', electric], ['forces', forceGroup], ['currents', currentGroup]]) $(id).addEventListener('change', e => { group.visible = e.target.checked; if (id === 'electric') $('electric-note').hidden = !e.target.checked; });
-for (const [id, object] of [['terminals', terminals], ['terminal-labels', terminalLabels], ['stator-electrons', statorElectrons], ['rotor-electrons', rotorElectrons], ['stator-core', stator], ['rotor-core', rotorCore], ['shaft-visible', shaft], ['grid-visible', grid], ['info-visible', null]]) $(id).addEventListener('change', e => { if (object) object.visible = e.target.checked; else $('part-info').hidden = !e.target.checked; });
+for (const [id, object] of [['terminals', terminals], ['terminal-labels', terminalLabels], ['stator-electrons', statorElectrons], ['rotor-electrons', rotorElectrons], ['stator-core', stator], ['rotor-core', rotorCore], ['rotor-cage', rotorCage], ['shaft-visible', shaft], ['grid-visible', grid], ['info-visible', null]]) $(id).addEventListener('change', e => { if (object) object.visible = e.target.checked; else $('part-info').hidden = !e.target.checked; });
+const partOpacity = createPartOpacityControls([
+  { id: 'stator-core', objects: [stator], value: 25 },
+  { id: 'rotor-core', objects: [rotorCore], value: 25 },
+  { id: 'rotor-cage', objects: [rotorCage], value: 35 },
+  { id: 'shaft-visible', objects: [shaft], value: 100 },
+  { id: 'housing', objects: [housing, front, rear], value: 20 },
+  { id: 'windings', objects: [winding], value: 40 },
+  { id: 'terminals', objects: [terminals], value: 100 },
+]);
 $('electron-paths').addEventListener('change', e => { electronPaths.visible = rotorElectronPaths.visible = e.target.checked; });
 for (const id of ['electron-density', 'electron-size', 'electron-drift']) $(id).addEventListener('input', () => {
   $('electron-density-value').textContent = `${$('electron-density').value} / Leiterweg`;
   $('electron-size-value').textContent = `${$('electron-size').value} %`;
-  $('electron-drift-value').textContent = `${$('electron-drift').value} × Lehrmaßstab`;
+  $('electron-drift-value').textContent = `${$('electron-drift').value} ×`;
 });
 function preset(kind) {
   const active = kind === 'electrons'
     ? ['windings', 'stator-electrons', 'rotor-electrons', 'electron-paths', 'winding-currents', 'grid-visible', 'info-visible']
     : kind === 'fields'
       ? ['windings', 'stator-core', 'rotor-core', 'shaft-visible', 'magnetic', 'electric', 'conductor-fields', 'rotor-fields', 'winding-currents', 'currents', 'forces', 'grid-visible']
-      : ['windings', 'shaft-visible', 'magnetic', 'stator-electrons', 'rotor-electrons', 'winding-currents', 'currents', 'forces', 'grid-visible', 'info-visible'];
-  active.push('terminals', 'terminal-labels');
-  document.querySelectorAll('.toggles:not([data-field-options]) input').forEach(input => { input.checked = active.includes(input.id); input.dispatchEvent(new Event('change')); });
+      : ['housing', 'stator-core', 'rotor-core', 'windings', 'shaft-visible', 'magnetic', 'stator-electrons', 'rotor-electrons', 'winding-currents', 'currents', 'forces', 'grid-visible', 'info-visible'];
+  active.push('terminals', 'terminal-labels', 'rotor-cage');
+  document.querySelectorAll('.toggles:not([data-field-options]) input[type="checkbox"]').forEach(input => { input.checked = active.includes(input.id); input.dispatchEvent(new Event('change')); });
 }
 document.querySelectorAll('[data-preset]').forEach(button => button.onclick = () => preset(button.dataset.preset));
 preset('overview');
 $('field-mode').onchange = () => {
   realistic = $('field-mode').value === 'physical';
+  if (realistic) {
+    $('stator-core').checked = $('rotor-core').checked = true;
+    stator.visible = rotorCore.visible = true;
+  }
   $('physical-options').hidden = !realistic;
-  for (const id of ['electric', 'rotor-fields', 'conductor-fields', 'rotor-electrons']) $(id).disabled = realistic;
+  $('physical-display').hidden = !realistic;
+  $('teaching-fields').hidden = realistic;
+  for (const id of ['rotor-fields', 'conductor-fields', 'rotor-electrons']) $(id).disabled = realistic;
   $('field-caption').textContent = realistic ? '3D-NÄHERUNG · RELATIVE FELDSTÄRKE' : '3D · ZWEIPOLIG';
   $('vector-heading').textContent = realistic ? 'Vorgegebene Erregung.' : 'Die Summe dreht sich.';
-  $('vector-note').textContent = realistic ? 'Stromreferenz des Lehrmodells, nicht das berechnete Gesamtfeld.' : 'Farbige Beiträge + weißes B · Kreis = Dreieck-Amplitude';
+  $('vector-note').textContent = realistic ? 'Idealreferenz, nicht das berechnete Gesamtfeld.' : 'Phasen + weißes B · Kreis: Dreieck';
   $('field-guide-note').textContent = realistic
-    ? 'Räumlich berechnetes B: Blau = schwach, Grün/Gelb = mittel, Orange = stark (feste relative Skala). Pfeile geben die Feldrichtung an, Linien sind keine Teilchenbahnen. Türkise Ströme und gelbe Kräfte gehören zum Näherungsmodell; bisherige lokale Kreisfelder, E-Pfeile und Rotor-Elektronen sind ausgeblendet.'
-    : 'Elektronen bewegen sich im Leiter, entgegen den Strompfeilen. Türkis mit Doppelring: induzierter Strom im Rotor, dieselbe Ladungsart. Grüne Linien: schematisches B-Feld auf der Stirnebene, keine Teilchenbahnen. Pfeillängen sind relativ.';
+    ? 'B: Blau schwach, Orange stark. Feldlinien sind keine Teilchenbahnen.'
+    : 'Elektronen gegen die Stromrichtung. Grün: schematisches B-Feld.';
 };
 function setRunning(value) { running = value; $('play').textContent = running ? 'Ⅱ Pause' : '▶ Start'; $('state').textContent = running ? 'SIMULATION LÄUFT' : 'SIMULATION ANGEHALTEN'; }
 $('play').onclick = () => setRunning(!running);
 $('step').onclick = () => { setRunning(false); advance(1 / (values.frequency * 48)); };
-$('direction').onclick = () => { direction *= -1; $('direction').textContent = `${direction > 0 ? '↻' : '↺'} Drehrichtung umkehren`; };
+$('direction').onclick = () => { direction *= -1; $('direction').textContent = `${direction > 0 ? '↻' : '↺'} Richtung umkehren`; };
 $('reset').onclick = resetCamera;
 $('front').onclick = () => { camera.position.set(0, .45, 10); controls.target.set(0, .45, 0); controls.update(); };
 const lessons = [
-  ['Ein Feld auf Wanderschaft.', 'Drei um 120° versetzte Wicklungen und Ströme erzeugen gemeinsam ein gleichmäßig rotierendes Magnetfeld.'],
-  ['Bewegung induziert Strom.', 'Der Schlupf zwischen Drehfeld und Rotor induziert Strom im Käfig. Blau zeigt seine axiale Richtung. Ohne Schlupf keine Induktion.'],
-  ['Aus Strom wird Drehmoment.', 'Lorentzkraft F = I · l × B: Gelbe Tangentialkräfte drehen den Rotor mit dem Feld. Mehr Last braucht mehr Schlupf.'],
+  ['Drehfeld', 'Drei um 120° versetzte Ströme erzeugen das Drehfeld.'],
+  ['Induktion', 'Schlupf induziert Rotorstrom. Ohne Schlupf keine Induktion.'],
+  ['Drehmoment', 'Strom im Magnetfeld erzeugt Kraft: F = I · l × B.'],
 ];
 document.querySelectorAll('[data-lesson]').forEach(button => button.onclick = () => {
   const index = Number(button.dataset.lesson);
-  $('lesson-number').textContent = `DAS PRINZIP / 0${index + 1}`;
+  $('lesson-number').textContent = `PRINZIP / 0${index + 1}`;
   $('lesson-title').textContent = lessons[index][0]; $('lesson-text').textContent = lessons[index][1];
   document.querySelectorAll('[data-lesson]').forEach(b => b.classList.toggle('active', b === button));
 });
+createControlHelp();
 const raycaster = new THREE.Raycaster();
 let down = { x: 0, y: 0 };
 renderer.domElement.addEventListener('pointerdown', e => { down = { x: e.clientX, y: e.clientY }; });
@@ -376,6 +430,9 @@ function advance(dt) {
   }
 }
 function updateMotor() {
+  const distributed = $('winding-layout').value === 'distributed';
+  simpleCore.visible = !distributed; slottedCore.visible = distributed;
+  for (const coil of coils) coil.body.visible = coil.leads.visible = coil.distributed === distributed;
   for (const group of parts) group.position.z = group.userData.offset * values.explode / 100;
   housing.visible = $('housing').checked;
   front.visible = rear.visible = housing.visible || values.explode > 0;
@@ -386,14 +443,12 @@ function updateMotor() {
   const density = Number($('electron-density').value), size = Number($('electron-size').value) / 100 * .4;
   terminalElectrons.visible = statorElectrons.visible;
   terminalElectronPaths.visible = electronPaths.visible && statorElectrons.visible;
-  for (const coil of coils) { coil.mat.transparent = statorElectrons.visible; coil.mat.opacity = statorElectrons.visible ? .38 : 1; coil.mat.depthWrite = !statorElectrons.visible; }
-  copper.transparent = rotorElectrons.visible; copper.opacity = rotorElectrons.visible ? .35 : 1; copper.depthWrite = !rotorElectrons.visible;
   for (const flow of flows) {
-    const active = !flow.mode || flow.mode === connection;
+    const active = (!flow.mode || flow.mode === connection) && (flow.distributed === null || flow.distributed === distributed);
     flow.particles.visible = flow.line.visible = active;
     flow.particles.material.size = size;
     flow.particles.material.depthTest = !$('electron-xray').checked;
-    if (!flow.particles.parent.visible) continue;
+    if (!active || !flow.particles.parent.visible) continue;
     const positions = flow.particles.geometry.getAttribute('position');
     const samples = flow.samples;
     let count = 0;
@@ -405,7 +460,7 @@ function updateMotor() {
     for (let i = -1; i <= density; i++) {
       const fraction = i * spacing + offset;
       if (fraction < 0 || fraction >= 1) continue;
-      const t = fraction * 512;
+      const t = fraction * (samples.length - 1);
       const index = Math.floor(t);
       electronPosition.copy(samples[index]).lerp(samples[index + 1], t - index);
       positions.setXYZ(count++, electronPosition.x, electronPosition.y, electronPosition.z);
@@ -421,11 +476,12 @@ function updateMotor() {
     arrow.setLength(Math.max(.02, Math.abs(field) * .85), Math.min(.13, Math.abs(field) * .3), .075);
   }
   for (const coil of coils) coil.mat.emissiveIntensity = .12 + gain * Math.abs(Math.cos(phase - coil.phase * TAU / 3)) * .75;
+  partOpacity.update();
   for (const display of conductorDisplays) {
     const a = display.a + (display.rotating ? rotorAngle : 0);
     const value = gain * (display.rotating ? direction * Math.cos(a - phase) * slip() / .128 : Math.cos(phase - display.phaseIndex * TAU / 3) * (display.side === 0 ? 1 : -1));
     const magnitude = Math.abs(value), sign = Math.sign(value) || 1;
-    display.current.visible = display.field.visible = magnitude > .015;
+    display.current.visible = display.field.visible = magnitude > .015 && (display.rotating || display.distributed === distributed);
     display.current.position.set(Math.cos(a) * display.radius, Math.sin(a) * display.radius, -.5 * sign);
     display.current.setDirection(new THREE.Vector3(0, 0, sign));
     display.current.setLength(Math.max(.02, magnitude * 1.1), Math.min(.15, magnitude * .35), .085);
@@ -466,13 +522,16 @@ function updateMotor() {
   forceGroup.visible = !realistic && $('forces').checked;
   currentGroup.visible = !realistic && $('currents').checked;
   const options = Object.fromEntries(Object.keys(fieldDefaults).map(key => [key, $(`physical-${key}`).checked]));
+  options.distributed = distributed;
+  options.electric = $('electric').checked;
   physicalField.update({ phase, rotorAngle, frequency: values.frequency, slip: slip(), gain, direction, explode: values.explode }, options, {
-    enabled: realistic, magnetic: $('magnetic').checked, lines: $('physical-lines').checked,
+    enabled: realistic, magnetic: $('magnetic').checked, electric: $('electric').checked, lines: $('physical-lines').checked,
     slice: $('physical-slice').value, currents: $('currents').checked, forces: $('forces').checked,
   }, performance.now());
   if (realistic) $('physical-status').textContent = values.explode > 0
-    ? 'Feldansicht bei Explosion ausgeblendet: Die Rechnung gilt nur für den zusammengebauten Motor.'
-    : `Schlupffrequenz ${(values.frequency * slip()).toFixed(2)} Hz · R-L-Phasenversatz ${(Math.abs(physicalField.model.lag) * 180 / Math.PI).toFixed(1)}° · periodisch eingeschwungener Zustand`;
+    ? 'Feld bei Explosion ausgeblendet.'
+    : physicalField.error || (!physicalField.ready ? 'Feld wird vorbereitet …'
+      : `Schlupf ${(values.frequency * slip()).toFixed(2)} Hz · Phasenversatz ${(Math.abs(physicalField.model.lag) * 180 / Math.PI).toFixed(1)}°`);
 }
 document.addEventListener('visibilitychange', () => { last = performance.now(); });
 if (matchMedia('(prefers-reduced-motion: reduce)').matches) setRunning(false);
