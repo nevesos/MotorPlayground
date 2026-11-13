@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { createStage, material, ringGeometry, textSprite, electronTexture, canvasContext, arrow2d } from './lab-view.js';
 import './style.css';
 
 const $ = id => document.getElementById(id);
@@ -9,32 +9,10 @@ const windingGain = () => connection === 'delta' ? Math.sqrt(3) : 1;
 const colors = [0xff876e, 0x71d5b3, 0x859dff];
 const cssColors = ['#ff876e', '#71d5b3', '#859dff'];
 const viewport = $('viewport');
-let renderer;
-try {
-  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-} catch {
-  viewport.innerHTML = '<p style="padding:40px">3D benötigt WebGL. Bitte Hardwarebeschleunigung aktivieren und die Seite neu laden.</p>';
-  throw new Error('WebGL ist nicht verfügbar.');
-}
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-renderer.outputColorSpace = THREE.SRGBColorSpace;
-viewport.prepend(renderer.domElement);
-const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(39, 1, 0.1, 100);
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.minDistance = 4;
-controls.maxDistance = 20;
-function resetCamera() { camera.position.set(5, 3.5, 6.8); controls.target.set(0, .45, 0); controls.update(); }
-resetCamera();
-scene.add(new THREE.HemisphereLight(0xc9e8ff, 0x28333a, 2.3));
-const key = new THREE.DirectionalLight(0xffead5, 3.5); key.position.set(4, 7, 5); scene.add(key);
-const rim = new THREE.DirectionalLight(0x92baff, 2); rim.position.set(-4, 1, -4); scene.add(rim);
-const grid = new THREE.GridHelper(20, 40, 0x344552, 0x25323b); grid.position.y = -1.9; scene.add(grid);
+const { renderer, scene, camera, controls, grid, resetCamera } = createStage(viewport);
 const motor = new THREE.Group(); scene.add(motor);
 const pickables = [];
 const parts = [];
-const material = (color, extra = {}) => new THREE.MeshStandardMaterial({ color, roughness: .4, metalness: .65, ...extra });
 const steel = material(0x758896);
 const darkSteel = material(0x334853);
 const copper = material(0xe4ad70, { metalness: .82, roughness: .28 });
@@ -48,10 +26,7 @@ function cylinder(radius, length, mat, parent, z = 0) {
   const obj = mesh(new THREE.CylinderGeometry(radius, radius, length, 64), mat, parent, z); obj.rotation.x = Math.PI / 2; return obj;
 }
 function ring(outer, inner, length, mat, parent, z = 0) {
-  const shape = new THREE.Shape(); shape.absarc(0, 0, outer, 0, TAU, false);
-  const hole = new THREE.Path(); hole.absarc(0, 0, inner, 0, TAU, true); shape.holes.push(hole);
-  const geo = new THREE.ExtrudeGeometry(shape, { depth: length, bevelEnabled: false, curveSegments: 64 }); geo.translate(0, 0, -length / 2);
-  return mesh(geo, mat, parent, z);
+  return mesh(ringGeometry(outer, inner, length), mat, parent, z);
 }
 const stator = part('Stator · Blechpaket', 'Der feststehende Eisenkern bündelt das Magnetfeld. Dünne isolierte Bleche begrenzen Wirbelstromverluste.');
 ring(1.57, 1.22, 1.9, darkSteel, stator);
@@ -75,12 +50,7 @@ for (let phaseIndex = 0; phaseIndex < 3; phaseIndex++) {
 const terminals = part('Klemmenkasten · Sternschaltung', 'L1 → U1, L2 → V1, L3 → W1. Die Wicklungsenden U2, V2 und W2 sind über die Messingbrücke zum Sternpunkt verbunden. Ein Neutralleiter ist nicht angeschlossen. PE ist der Schutzleiter, kein Betriebsstrompfad.');
 const terminalLabels = new THREE.Group(); terminals.add(terminalLabels);
 function label3d(text, position, color = '#edf4fa', width = .5) {
-  const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 80;
-  const ctx = canvas.getContext('2d'); ctx.fillStyle = '#101b25ed'; ctx.fillRect(0, 0, 256, 80);
-  ctx.font = 'bold 45px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = color; ctx.fillText(text, 128, 42);
-  const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false, depthWrite: false }));
-  sprite.position.copy(position); sprite.scale.set(width, width * 80 / 256, 1); sprite.renderOrder = 10; terminalLabels.add(sprite);
+  const sprite = textSprite(text, position, color, width); terminalLabels.add(sprite);
   return sprite;
 }
 mesh(new THREE.BoxGeometry(2.35, 1, .16), material(0x243642), terminals).position.set(0, 2.18, -.28);
@@ -184,16 +154,6 @@ const rotorElectrons = new THREE.Group(); rotor.add(rotorElectrons);
 const electronPaths = new THREE.Group(); motor.add(electronPaths); electronPaths.visible = false;
 const rotorElectronPaths = new THREE.Group(); rotor.add(rotorElectronPaths); rotorElectronPaths.visible = false;
 const flows = [];
-function electronTexture(induced) {
-  const canvas = document.createElement('canvas'); canvas.width = canvas.height = 64;
-  const icon = canvas.getContext('2d');
-  icon.beginPath(); icon.arc(32, 32, 27, 0, TAU); icon.fillStyle = induced ? '#087d79' : '#2679d7'; icon.fill();
-  icon.lineWidth = 3; icon.strokeStyle = induced ? '#78fff0' : '#a8d9ff'; icon.stroke();
-  if (induced) { icon.beginPath(); icon.arc(32, 32, 20, 0, TAU); icon.lineWidth = 2; icon.stroke(); }
-  icon.fillStyle = '#ffffff'; icon.fillRect(17, 29, 30, 6);
-  const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
-  return texture;
-}
 const suppliedElectronTexture = electronTexture(false), inducedElectronTexture = electronTexture(true);
 const electronPosition = new THREE.Vector3();
 function electronFlow(path, parent, pathParent, color, phaseIndex, rotating = false, weights = null, mode = null) {
@@ -360,19 +320,6 @@ renderer.domElement.addEventListener('pointerup', e => {
   if (obj) { $('part-name').textContent = obj.userData.name; $('part-description').textContent = obj.userData.description; }
 });
 
-function canvasContext(id) {
-  const canvas = $(id), rect = canvas.getBoundingClientRect(), dpr = Math.min(devicePixelRatio, 2);
-  const w = Math.round(rect.width * dpr), h = Math.round(rect.height * dpr);
-  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
-  const ctx = canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, rect.width, rect.height);
-  return { ctx, w: rect.width, h: rect.height };
-}
-function arrow2d(ctx, x, y, dx, dy, color, width = 2) {
-  const a = Math.atan2(dy, dx); if (Math.hypot(dx, dy) < 1) return;
-  ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = width;
-  ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + dx, y + dy); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(x + dx, y + dy); ctx.lineTo(x + dx - 7 * Math.cos(a - .45), y + dy - 7 * Math.sin(a - .45)); ctx.lineTo(x + dx - 7 * Math.cos(a + .45), y + dy - 7 * Math.sin(a + .45)); ctx.fill();
-}
 function instruments() {
   const { ctx, w, h } = canvasContext('scope');
   const left = 25, right = w - 10, mid = h / 2 - 4, amp = h * .31 / 2, gain = windingGain();
@@ -495,7 +442,6 @@ function updateMotor() {
     current.setLength(Math.max(.02, currentStrength * .9), Math.min(.12, currentStrength * .3), .065);
   }
 }
-new ResizeObserver(() => { const w = viewport.clientWidth, h = viewport.clientHeight; renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); }).observe(viewport);
 document.addEventListener('visibilitychange', () => { last = performance.now(); });
 if (matchMedia('(prefers-reduced-motion: reduce)').matches) setRunning(false);
 readouts();
