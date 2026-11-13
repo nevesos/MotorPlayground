@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { createStage, material, ringGeometry, textSprite, electronTexture, canvasContext, arrow2d } from './lab-view.js';
+import { createInductionFieldView } from './induction-field-view.js';
+import { fieldDefaults } from './induction-field.js';
 import './style.css';
 
 const $ = id => document.getElementById(id);
@@ -11,6 +13,8 @@ const cssColors = ['#ff876e', '#71d5b3', '#859dff'];
 const viewport = $('viewport');
 const { renderer, scene, camera, controls, grid, resetCamera } = createStage(viewport);
 const motor = new THREE.Group(); scene.add(motor);
+const physicalField = createInductionFieldView(motor);
+let realistic = false;
 const pickables = [];
 const parts = [];
 const steel = material(0x758896);
@@ -285,10 +289,21 @@ function preset(kind) {
       ? ['windings', 'stator-core', 'rotor-core', 'shaft-visible', 'magnetic', 'electric', 'conductor-fields', 'rotor-fields', 'winding-currents', 'currents', 'forces', 'grid-visible']
       : ['windings', 'shaft-visible', 'magnetic', 'stator-electrons', 'rotor-electrons', 'winding-currents', 'currents', 'forces', 'grid-visible', 'info-visible'];
   active.push('terminals', 'terminal-labels');
-  document.querySelectorAll('.toggles input').forEach(input => { input.checked = active.includes(input.id); input.dispatchEvent(new Event('change')); });
+  document.querySelectorAll('.toggles:not([data-field-options]) input').forEach(input => { input.checked = active.includes(input.id); input.dispatchEvent(new Event('change')); });
 }
 document.querySelectorAll('[data-preset]').forEach(button => button.onclick = () => preset(button.dataset.preset));
 preset('overview');
+$('field-mode').onchange = () => {
+  realistic = $('field-mode').value === 'physical';
+  $('physical-options').hidden = !realistic;
+  for (const id of ['electric', 'rotor-fields', 'conductor-fields', 'rotor-electrons']) $(id).disabled = realistic;
+  $('field-caption').textContent = realistic ? '3D-NÄHERUNG · RELATIVE FELDSTÄRKE' : '3D · ZWEIPOLIG';
+  $('vector-heading').textContent = realistic ? 'Vorgegebene Erregung.' : 'Die Summe dreht sich.';
+  $('vector-note').textContent = realistic ? 'Stromreferenz des Lehrmodells, nicht das berechnete Gesamtfeld.' : 'Farbige Beiträge + weißes B · Kreis = Dreieck-Amplitude';
+  $('field-guide-note').textContent = realistic
+    ? 'Räumlich berechnetes B: Blau = schwach, Grün/Gelb = mittel, Orange = stark (feste relative Skala). Pfeile geben die Feldrichtung an, Linien sind keine Teilchenbahnen. Türkise Ströme und gelbe Kräfte gehören zum Näherungsmodell; bisherige lokale Kreisfelder, E-Pfeile und Rotor-Elektronen sind ausgeblendet.'
+    : 'Elektronen bewegen sich im Leiter, entgegen den Strompfeilen. Türkis mit Doppelring: induzierter Strom im Rotor, dieselbe Ladungsart. Grüne Linien: schematisches B-Feld auf der Stirnebene, keine Teilchenbahnen. Pfeillängen sind relativ.';
+};
 function setRunning(value) { running = value; $('play').textContent = running ? 'Ⅱ Pause' : '▶ Start'; $('state').textContent = running ? 'SIMULATION LÄUFT' : 'SIMULATION ANGEHALTEN'; }
 $('play').onclick = () => setRunning(!running);
 $('step').onclick = () => { setRunning(false); advance(1 / (values.frequency * 48)); };
@@ -441,6 +456,23 @@ function updateMotor() {
     current.visible = currentStrength > .015;
     current.setLength(Math.max(.02, currentStrength * .9), Math.min(.12, currentStrength * .3), .065);
   }
+  // The optional field model owns its own field/current/force overlays, not the teaching diagrams.
+  magnetic.visible = !realistic && $('magnetic').checked;
+  electric.visible = !realistic && $('electric').checked;
+  conductorFields.visible = !realistic && $('conductor-fields').checked;
+  rotorFields.visible = !realistic && $('rotor-fields').checked;
+  rotorElectrons.visible = !realistic && $('rotor-electrons').checked;
+  rotorElectronPaths.visible = !realistic && $('electron-paths').checked;
+  forceGroup.visible = !realistic && $('forces').checked;
+  currentGroup.visible = !realistic && $('currents').checked;
+  const options = Object.fromEntries(Object.keys(fieldDefaults).map(key => [key, $(`physical-${key}`).checked]));
+  physicalField.update({ phase, rotorAngle, frequency: values.frequency, slip: slip(), gain, direction, explode: values.explode }, options, {
+    enabled: realistic, magnetic: $('magnetic').checked, lines: $('physical-lines').checked,
+    slice: $('physical-slice').value, currents: $('currents').checked, forces: $('forces').checked,
+  }, performance.now());
+  if (realistic) $('physical-status').textContent = values.explode > 0
+    ? 'Feldansicht bei Explosion ausgeblendet: Die Rechnung gilt nur für den zusammengebauten Motor.'
+    : `Schlupffrequenz ${(values.frequency * slip()).toFixed(2)} Hz · R-L-Phasenversatz ${(Math.abs(physicalField.model.lag) * 180 / Math.PI).toFixed(1)}° · periodisch eingeschwungener Zustand`;
 }
 document.addEventListener('visibilitychange', () => { last = performance.now(); });
 if (matchMedia('(prefers-reduced-motion: reduce)').matches) setRunning(false);
