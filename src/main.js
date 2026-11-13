@@ -84,7 +84,7 @@ function label3d(text, position, color = '#edf4fa', width = .5) {
   return sprite;
 }
 mesh(new THREE.BoxGeometry(2.35, 1, .16), material(0x243642), terminals).position.set(0, 2.18, -.28);
-const upper = [], lower = [];
+const upper = [], lower = [], feeds = [];
 for (let i = 0; i < 3; i++) {
   const x = (i - 1) * .72;
   upper.push(new THREE.Vector3(x, 2.38, -.13)); lower.push(new THREE.Vector3(x, 1.98, -.13));
@@ -92,7 +92,8 @@ for (let i = 0; i < 3; i++) {
   label3d(['U1', 'V1', 'W1'][i], new THREE.Vector3(x, 2.56, .01), cssColors[i]);
   label3d(['W2', 'U2', 'V2'][i], new THREE.Vector3(x, 1.78, .01));
   const feed = new THREE.LineCurve3(new THREE.Vector3(x, 3.05, -.13), upper[i]);
-  mesh(new THREE.TubeGeometry(feed, 1, .025, 8, false), material(colors[i]), terminals);
+  feeds.push(feed);
+  mesh(new THREE.TubeGeometry(feed, 1, .025, 8, false), coils[i].mat, terminals);
   label3d(['L1', 'L2', 'L3'][i], new THREE.Vector3(x, 3.18, -.13), cssColors[i]);
 }
 const starBridge = mesh(new THREE.BoxGeometry(1.6, .055, .04), copper, terminals); starBridge.position.set(0, 1.98, -.04);
@@ -106,10 +107,8 @@ for (const coil of coils) {
   const route = (from, to, offset) => new THREE.CatmullRomCurve3([from, new THREE.Vector3(from.x * 1.2, from.y * 1.2, from.z - .25), new THREE.Vector3(to.x + offset, 1.65, -.9 - coil.phase * .18), to]);
   const inlet = route(start, upper[coil.phase], -.12), outlet = route(end, finish, .12);
   for (const path of [inlet, outlet]) mesh(new THREE.TubeGeometry(path, 40, .025, 8, false), coil.mat, terminals);
-  const fedPath = new THREE.CurvePath();
   const incoming = new THREE.CatmullRomCurve3([...inlet.points].reverse());
-  fedPath.add(incoming); for (const curve of coil.path.curves) fedPath.add(curve); fedPath.add(outlet);
-  coil.fedPath = fedPath;
+  coil.inlet = incoming; coil.outlet = outlet;
   label3d(['U', 'V', 'W'][coil.phase], new THREE.Vector3(Math.cos(coil.phase * TAU / 3 + Math.PI / 2) * 1.55, Math.sin(coil.phase * TAU / 3 + Math.PI / 2) * 1.55, 1.35), cssColors[coil.phase], .3);
 }
 const pe = new THREE.Vector3(1.03, 2.18, -.12);
@@ -185,27 +184,60 @@ const rotorElectrons = new THREE.Group(); rotor.add(rotorElectrons);
 const electronPaths = new THREE.Group(); motor.add(electronPaths); electronPaths.visible = false;
 const rotorElectronPaths = new THREE.Group(); rotor.add(rotorElectronPaths); rotorElectronPaths.visible = false;
 const flows = [];
-const electronIcon = document.createElement('canvas'); electronIcon.width = electronIcon.height = 64;
-const icon = electronIcon.getContext('2d');
-icon.beginPath(); icon.arc(32, 32, 27, 0, TAU); icon.fillStyle = '#2679d7'; icon.fill();
-icon.lineWidth = 3; icon.strokeStyle = '#a8d9ff'; icon.stroke();
-icon.fillStyle = '#ffffff'; icon.fillRect(17, 29, 30, 6);
-const electronTexture = new THREE.CanvasTexture(electronIcon); electronTexture.colorSpace = THREE.SRGBColorSpace;
+function electronTexture(induced) {
+  const canvas = document.createElement('canvas'); canvas.width = canvas.height = 64;
+  const icon = canvas.getContext('2d');
+  icon.beginPath(); icon.arc(32, 32, 27, 0, TAU); icon.fillStyle = induced ? '#087d79' : '#2679d7'; icon.fill();
+  icon.lineWidth = 3; icon.strokeStyle = induced ? '#78fff0' : '#a8d9ff'; icon.stroke();
+  if (induced) { icon.beginPath(); icon.arc(32, 32, 20, 0, TAU); icon.lineWidth = 2; icon.stroke(); }
+  icon.fillStyle = '#ffffff'; icon.fillRect(17, 29, 30, 6);
+  const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+const suppliedElectronTexture = electronTexture(false), inducedElectronTexture = electronTexture(true);
 const electronPosition = new THREE.Vector3();
-function electronFlow(path, parent, pathParent, color, phaseIndex, rotating = false) {
+function electronFlow(path, parent, pathParent, color, phaseIndex, rotating = false, weights = null, mode = null) {
   const samples = path.getSpacedPoints(512);
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(64 * 3), 3).setUsage(THREE.DynamicDrawUsage));
-  const mat = new THREE.PointsMaterial({ map: electronTexture, size: .4, transparent: true, alphaTest: .1, depthTest: true, depthWrite: false });
+  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(68 * 3), 3).setUsage(THREE.DynamicDrawUsage));
+  const mat = new THREE.PointsMaterial({ map: rotating ? inducedElectronTexture : suppliedElectronTexture, size: .4, transparent: true, alphaTest: .1, depthTest: true, depthWrite: false });
   const particles = new THREE.Points(geometry, mat);
   particles.frustumCulled = false; particles.renderOrder = 8; parent.add(particles);
   const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(samples), new THREE.LineBasicMaterial({ color, transparent: true, opacity: .35, depthTest: false, depthWrite: false }));
   line.renderOrder = 6; pathParent.add(line);
-  flows.push({ particles, samples, phaseIndex, rotating, drift: 0 });
+  const closed = rotating;
+  flows.push({ particles, line, samples, length: path.getLength(), phaseIndex, rotating, closed, weights, mode, drift: 0 });
 }
+const terminalElectrons = new THREE.Group(); terminals.add(terminalElectrons);
+const terminalElectronPaths = new THREE.Group(); terminals.add(terminalElectronPaths);
 for (const coil of coils) {
   electronFlow(coil.path, statorElectrons, electronPaths, colors[coil.phase], coil.phase);
-  flows.at(-1).fedSamples = coil.fedPath.getSpacedPoints(512);
+  for (const path of [coil.inlet, coil.outlet]) electronFlow(path, terminalElectrons, terminalElectronPaths, colors[coil.phase], coil.phase);
+}
+for (let i = 0; i < 3; i++) {
+  // At each delta node the line supplies the difference of two winding currents.
+  const previous = (i + 2) % 3;
+  const weights = [0, 0, 0]; weights[i] = 1; weights[previous] = -1;
+  electronFlow(feeds[i], terminalElectrons, terminalElectronPaths, colors[i], i, false, null, 'star');
+  electronFlow(feeds[i], terminalElectrons, terminalElectronPaths, colors[i], i, false, weights, 'delta');
+  const bridge = new THREE.CurvePath();
+  const top = upper[i].clone(); top.z = -.04;
+  const bottom = lower[i].clone(); bottom.z = -.04;
+  bridge.add(new THREE.LineCurve3(upper[i], top));
+  bridge.add(new THREE.LineCurve3(top, bottom));
+  bridge.add(new THREE.LineCurve3(bottom, lower[i]));
+  const bridgeWeights = [0, 0, 0]; bridgeWeights[previous] = -1;
+  electronFlow(bridge, terminalElectrons, terminalElectronPaths, 0xe4ad70, previous, false, bridgeWeights, 'delta');
+}
+for (let i = 0; i < 2; i++) {
+  const start = lower[i].clone(), end = lower[i + 1].clone(); start.z = end.z = -.04;
+  const bridge = new THREE.CurvePath();
+  bridge.add(new THREE.LineCurve3(lower[i], start));
+  bridge.add(new THREE.LineCurve3(start, end));
+  bridge.add(new THREE.LineCurve3(end, lower[i + 1]));
+  // Lower row is W2, U2, V2: I_W then I_W + I_U = -I_V.
+  const weights = i === 0 ? [0, 0, 1] : [0, -1, 0];
+  electronFlow(bridge, terminalElectrons, terminalElectronPaths, 0xe4ad70, 0, false, weights, 'star');
 }
 for (let i = 0; i < 11; i++) {
   const a = i * TAU / 22, r = 1.005;
@@ -291,7 +323,7 @@ function preset(kind) {
     ? ['windings', 'stator-electrons', 'rotor-electrons', 'electron-paths', 'winding-currents', 'grid-visible', 'info-visible']
     : kind === 'fields'
       ? ['windings', 'stator-core', 'rotor-core', 'shaft-visible', 'magnetic', 'electric', 'conductor-fields', 'rotor-fields', 'winding-currents', 'currents', 'forces', 'grid-visible']
-      : ['windings', 'rotor-core', 'shaft-visible', 'magnetic', 'stator-electrons', 'winding-currents', 'forces', 'grid-visible', 'info-visible'];
+      : ['windings', 'shaft-visible', 'magnetic', 'stator-electrons', 'rotor-electrons', 'winding-currents', 'currents', 'forces', 'grid-visible', 'info-visible'];
   active.push('terminals', 'terminal-labels');
   document.querySelectorAll('.toggles input').forEach(input => { input.checked = active.includes(input.id); input.dispatchEvent(new Event('change')); });
 }
@@ -370,13 +402,15 @@ function advance(dt) {
   const oldPhase = phase, oldRotor = rotorAngle;
   simTime += dt; phase = (phase + direction * TAU * values.frequency * dt) % TAU;
   rotorAngle = (rotorAngle + direction * TAU * values.frequency * (1 - slip()) * dt) % TAU;
-  const amplitude = Number($('electron-drift').value) / 100 * windingGain();
+  const amplitude = Number($('electron-drift').value) / 6 * .7 * windingGain();
   for (const flow of flows) {
     // Integrate -I exactly over the step: AC electrons oscillate, not circulate steadily.
     const delta = flow.rotating
       ? Math.sin(rotorAngle - phase + flow.phaseIndex) - Math.sin(oldRotor - oldPhase + flow.phaseIndex)
-      : -(Math.sin(phase - flow.phaseIndex * TAU / 3) - Math.sin(oldPhase - flow.phaseIndex * TAU / 3)) / direction;
-    flow.drift = (flow.drift + amplitude * delta) % 1;
+      : -(flow.weights
+        ? flow.weights.reduce((sum, weight, k) => sum + weight * (Math.sin(phase - k * TAU / 3) - Math.sin(oldPhase - k * TAU / 3)), 0)
+        : Math.sin(phase - flow.phaseIndex * TAU / 3) - Math.sin(oldPhase - flow.phaseIndex * TAU / 3)) / direction;
+    flow.drift += amplitude * delta;
   }
 }
 function updateMotor() {
@@ -388,21 +422,33 @@ function updateMotor() {
   const gain = windingGain();
   fieldArrow.setLength(1.7 * gain, .24, .15);
   const density = Number($('electron-density').value), size = Number($('electron-size').value) / 100 * .4;
+  terminalElectrons.visible = statorElectrons.visible;
+  terminalElectronPaths.visible = electronPaths.visible && statorElectrons.visible;
   for (const coil of coils) { coil.mat.transparent = statorElectrons.visible; coil.mat.opacity = statorElectrons.visible ? .38 : 1; coil.mat.depthWrite = !statorElectrons.visible; }
   copper.transparent = rotorElectrons.visible; copper.opacity = rotorElectrons.visible ? .35 : 1; copper.depthWrite = !rotorElectrons.visible;
   for (const flow of flows) {
-    flow.particles.geometry.setDrawRange(0, density);
+    const active = !flow.mode || flow.mode === connection;
+    flow.particles.visible = flow.line.visible = active;
     flow.particles.material.size = size;
     flow.particles.material.depthTest = !$('electron-xray').checked;
     if (!flow.particles.parent.visible) continue;
     const positions = flow.particles.geometry.getAttribute('position');
-    const samples = flow.fedSamples && terminals.visible ? flow.fedSamples : flow.samples;
-    for (let i = 0; i < density; i++) {
-      const t = ((i / density + flow.drift) % 1 + 1) % 1 * 512;
+    const samples = flow.samples;
+    let count = 0;
+    // Open conductors have an off-screen reservoir, never a jump between their ends.
+    // A common distance scale keeps drift speed equal along each unbranched conductor.
+    const displacement = flow.drift / flow.length;
+    const spacing = flow.closed ? 1 / density : 1 / (density - 1);
+    const offset = ((displacement % spacing) + spacing) % spacing;
+    for (let i = -1; i <= density; i++) {
+      const fraction = i * spacing + offset;
+      if (fraction < 0 || fraction >= 1) continue;
+      const t = fraction * 512;
       const index = Math.floor(t);
       electronPosition.copy(samples[index]).lerp(samples[index + 1], t - index);
-      positions.setXYZ(i, electronPosition.x, electronPosition.y, electronPosition.z);
+      positions.setXYZ(count++, electronPosition.x, electronPosition.y, electronPosition.z);
     }
+    flow.particles.geometry.setDrawRange(0, count);
     positions.needsUpdate = true;
   }
   // For ideal uniform rotating B: A_z = B(y cos(phi) - x sin(phi)), E_z = -dA_z/dt.
