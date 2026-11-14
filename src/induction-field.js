@@ -10,6 +10,12 @@ const index = (x, y, z) => ((z * NX + y) * NX + x) * 3;
 
 export const fieldDefaults = { iron: true, statorIron: true, rotorIron: true, reaction: true, inductance: true, ends: true, saturation: false, slots: true, skew: true };
 
+export function rotorResponse({ frequency, slip, direction, gain }, inductance = true) {
+  const omega = TAU * frequency * slip * direction;
+  const tau = inductance ? .045 : 0;
+  return { lag: Math.atan(omega * tau), amplitude: gain * .006 * omega / Math.hypot(1, omega * tau) };
+}
+
 export const materialKey = options => JSON.stringify(['ends', 'skew', 'distributed', 'slots', 'statorIron', 'rotorIron', 'saturation', 'reaction'].map(key => options[key]));
 
 function segment(list, a, b, weight = 1) {
@@ -148,11 +154,10 @@ export class InductionField {
 
   setState(state) {
     Object.assign(this.state, state);
-    const omega = TAU * state.frequency * state.slip * state.direction;
-    const tau = this.options.inductance ? .045 : 0;
-    this.lag = Math.atan(omega * tau);
     // Steady-state R-L response in rotor coordinates; R, coupling and L are example parameters.
-    this.rotorAmplitude = state.gain * (this.options.distributed ? effectiveTurns : 1) * .006 * omega / Math.hypot(1, omega * tau);
+    const response = rotorResponse(state, this.options.inductance);
+    this.lag = response.lag;
+    this.rotorAmplitude = response.amplitude * (this.options.distributed ? effectiveTurns : 1);
   }
 
   prepareMaterial() {

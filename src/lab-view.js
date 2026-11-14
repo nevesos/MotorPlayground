@@ -17,7 +17,8 @@ export function createStage(viewport, frontal = false) {
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(39, 1, .1, 100);
   const controls = new OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = true; controls.minDistance = 4; controls.maxDistance = 20;
+  controls.enableDamping = true; controls.minDistance = .5; controls.maxDistance = 30;
+  controls.zoomToCursor = true;
   function resetCamera() {
     camera.position.set(...(frontal ? [0, .45, 10] : [5, 3.5, 6.8]));
     controls.target.set(0, .45, 0); controls.update();
@@ -46,13 +47,29 @@ export function ringGeometry(outer, inner, length) {
   geo.translate(0, 0, -length / 2); return geo;
 }
 
-export function textSprite(text, position, color = '#edf4fa', width = .5) {
+export function textSprite(text, position, color = '#edf4fa', width = .5, badge = false) {
   const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 80;
-  const ctx = canvas.getContext('2d'); ctx.fillStyle = '#101b25ed'; ctx.fillRect(0, 0, 256, 80);
-  ctx.font = 'bold 45px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = color; ctx.fillText(text, 128, 42);
+  const ctx = canvas.getContext('2d');
+  if (badge) {
+    ctx.font = '600 28px sans-serif';
+    canvas.width = Math.ceil(ctx.measureText(text).width) + 70; canvas.height = 76;
+    const background = ctx.createLinearGradient(0, 8, 0, 64);
+    background.addColorStop(0, '#354855'); background.addColorStop(1, '#162630');
+    ctx.shadowColor = '#00000099'; ctx.shadowBlur = 9; ctx.shadowOffsetY = 3;
+    ctx.beginPath(); ctx.roundRect(7, 5, canvas.width - 14, 60, 13);
+    ctx.fillStyle = background; ctx.fill();
+    ctx.shadowColor = 'transparent'; ctx.strokeStyle = '#7894a566'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.beginPath(); ctx.roundRect(14, 18, 4, 32, 2); ctx.fillStyle = color; ctx.fill();
+    ctx.font = '600 28px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#edf4fa'; ctx.fillText(text, canvas.width / 2 + 4, 36);
+    width = canvas.width / canvas.height * .34;
+  } else {
+    ctx.fillStyle = '#101b25ed'; ctx.fillRect(0, 0, 256, 80);
+    ctx.font = 'bold 45px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = color; ctx.fillText(text, 128, 42);
+  }
   const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false, depthWrite: false }));
-  sprite.position.copy(position); sprite.scale.set(width, width * 80 / 256, 1); sprite.renderOrder = 10;
+  sprite.position.copy(position); sprite.scale.set(width, width * canvas.height / canvas.width, 1); sprite.renderOrder = 10;
   return sprite;
 }
 

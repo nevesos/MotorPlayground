@@ -20,7 +20,44 @@
     </section>
     <aside>
       <section><span class="eyebrow">MODELL</span>
-        <label class="connection-select" for="field-mode" data-help="Lehrmodus: schematisch. 3D: berechnete relative Felder.">Feldmodell <select id="field-mode"><option value="teaching">Lehrmodus</option><option value="physical">3D-Physiknäherung</option></select></label>
+        <label class="connection-select" for="field-mode" data-help="Einstieg: kompletter Motor, nur das Grundprinzip. Schrittweise: vertiefende Lernstufen. Lehrmodus: frei erkunden. 3D: berechnete relative Felder.">Feldmodell <select id="field-mode"><option value="beginner">Einstieg · So funktioniert der Motor</option><option value="learning">Schrittweise verstehen</option><option value="teaching">Lehrmodus</option><option value="physical">3D-Physiknäherung</option></select></label>
+        <div class="beginner-panel" id="beginner-panel" hidden>
+          <p class="eyebrow">GRUNDPRINZIP</p>
+          <h2>Strom wird Bewegung.</h2>
+          <p>Der ganze Motor bleibt sichtbar. Das transparente Gehäuse mit Kühlrippen und Füßen lässt dich hineinsehen. Zwei Lagerschilde tragen die Kugellager: Sie halten die Welle in der Mitte und lassen sie leicht drehen.</p>
+          <div class="beginner-steps" role="group" aria-label="Funktionsweise erkunden">
+            <button data-beginner-step="0" aria-pressed="false">1 · Die Spulen stehen still</button>
+            <button data-beginner-step="1" aria-pressed="false">2 · Das Magnetfeld wandert</button>
+            <button data-beginner-step="2" aria-pressed="true">3 · Der Rotor dreht mit</button>
+          </div>
+          <div class="beginner-explanation" aria-live="polite"><h3 id="beginner-title"></h3><p id="beginner-text"></p></div>
+          <p class="beginner-key"><span>Grün: umlaufendes Magnetfeld</span><span>Türkis: Bewegung des Rotors</span></p>
+          <p><strong>Probiere es aus:</strong> Pausiere die Bewegung oder kehre unten die Drehrichtung um. Was bleibt stehen, was dreht sich?</p>
+          <button id="beginner-direction" class="wide quiet">Drehrichtung umkehren</button>
+          <details><summary>Warum ist der Rotor etwas langsamer?</summary><p>Nur wenn das Magnetfeld den Rotor überholt, wird im Rotorkäfig Strom erzeugt (Induktion). Dieser Strom wirkt mit dem Magnetfeld zusammen: Es entsteht eine Drehkraft. Würde der Rotor genau gleich schnell drehen, fehlte dieser Antrieb.</p></details>
+          <p class="field-note">Die Pfeile sind Merkhilfen, keine Bauteile oder Teilchenbahnen. Kein Permanentmagnet: Der Rotorstrom wird ohne elektrische Zuleitung erzeugt. Die Drehzahl ist im Lehrmodell vorgegeben; ein Anlauf wird nicht berechnet.</p>
+        </div>
+        <details class="learning-path">
+          <summary>Lernstufen <span id="learning-current"></span></summary>
+          <label class="connection-select" for="learning-steps">Stufe <select id="learning-steps"></select></label>
+          <p id="learning-text"></p>
+          <div class="learning-actions"><button id="learning-back" class="quiet">Zurück</button><button id="learning-next" class="primary">Weiter</button><button id="learning-restore" class="quiet">Zurücksetzen</button><span id="learning-state" role="status">Stufenansicht</span></div>
+          <div class="control"><label for="learning-time">Zeitpunkt <output id="learning-time-value">0°</output></label><input id="learning-time" type="range" min="0" max="360" step="1" value="0"></div>
+        </details>
+        <div class="rotor-operation" role="group" aria-label="Rotor festhalten oder freigeben"><input id="rotor-held" type="checkbox" hidden><button id="rotor-lock" class="quiet" aria-pressed="false">Rotor fest</button><button id="rotor-release" class="quiet" aria-pressed="true">Rotor frei</button></div>
+        <p class="field-note" id="motion-guide" hidden><span class="motion-field">◆ Drehfeld</span> · <span class="motion-rotor">● Rotorstab</span><br>Das Feld überholt den Rotor. Rotorpole sind keine festen Stellen am Käfig.</p>
+        <details class="teaching-settings"><summary>Lehrdarstellung anpassen</summary>
+        <label class="connection-select" for="teaching-phases">Spulen zeigen <select id="teaching-phases"><option value="1">Eine Phase</option><option value="3" selected>Alle drei Phasen</option></select></label>
+        <div class="toggles" data-field-options>
+          <label><input id="poles" type="checkbox" checked> N/S · Statorpole <span class="toggle"></span></label>
+          <label><input id="rotor-poles" type="checkbox"> N/S · induzierte Rotorpole <span class="toggle"></span></label>
+          <label><input id="probe-magnet" type="checkbox"> Probemagnet mit Kraftpfeilen <span class="toggle"></span></label>
+          <label><input id="focus-pair" type="checkbox"> Zwei Rotorleiter hervorheben <span class="toggle"></span></label>
+          <label><input id="motion-markers" type="checkbox" checked> Drehfeld / Rotor verfolgen <span class="toggle"></span></label>
+        </div>
+        <p class="field-note">Pole und Probemagnet: Lehrbilder, keine Permanentmagnete im Motor. 3D rechnet mit drei Phasen.</p>
+        <p class="field-note" id="rotor-angle-note" hidden></p>
+        </details>
         <label class="connection-select" for="winding-layout" data-help="Verteilt: 18 Nuten, zwölf Windungen je Phase. Einfach: drei Schleifen.">Wicklung <select id="winding-layout"><option value="distributed">Verteilt</option><option value="simple">Einzelschleifen</option></select></label>
         <div id="physical-options" hidden>
           <p class="control-group">Eisen</p>
@@ -44,7 +81,8 @@
       </section>
       <section><span class="eyebrow">BETRIEB</span>
         <div class="control" data-help="Bestimmt die Drehzahl des zweipoligen Drehfelds."><label for="frequency">Frequenz <output id="frequency-value">50 Hz</output></label><input id="frequency" type="range" min="5" max="60" value="50"></div>
-        <div class="control" data-help="Mehr Last gibt mehr Schlupf und stärkere Rotorströme vor."><label for="load">Last <output id="load-value">35 %</output></label><input id="load" type="range" min="0" max="100" value="35"></div>
+         <div class="control" data-help="Mehr Last gibt mehr Schlupf und stärkere Rotorströme vor."><label for="load">Last <output id="load-value">35 %</output></label><input id="load" type="range" min="0" max="100" value="35"></div>
+         <p class="field-note" id="load-hint" hidden>Wirkt bei freiem Rotor.</p>
         <button id="direction" class="wide quiet" title="Kehrt Drehfeld und Rotordrehung um.">↻ Richtung umkehren</button>
       </section>
       <section class="readouts"><div><span>DREHFELD</span><strong id="sync-rpm">3.000 <small>min⁻¹</small></strong></div><div><span>ROTOR</span><strong id="rotor-rpm">2.880 <small>min⁻¹</small></strong></div><div><span>SCHLUPF</span><strong id="slip-value">4,0 <small>%</small></strong></div><div><span>LAST</span><strong id="torque-value">35 <small>%</small></strong></div></section>
@@ -103,7 +141,6 @@
           <label data-help="Zeigt die Beschreibung des angeklickten Bauteils."><input id="info-visible" type="checkbox" checked> Bauteilinfo <span class="toggle"></span></label>
         </div>
       </section>
-      <section class="explanation"><span class="eyebrow" id="lesson-number">PRINZIP / 01</span><h3 id="lesson-title">Drehfeld</h3><p id="lesson-text">Drei um 120° versetzte Ströme erzeugen das Drehfeld.</p><div class="lesson-nav"><button data-lesson="0" class="active">01 Feld</button><button data-lesson="1">02 Strom</button><button data-lesson="2">03 Kraft</button></div></section>
       <p class="footnote">Vereinfachtes Lehrmodell. Keine realen Leistungswerte.</p>
     </aside>
   </main>

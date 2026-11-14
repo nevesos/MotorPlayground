@@ -1,4 +1,31 @@
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+#viewport #part-info{pointer-events:auto;z-index:4;max-height:45%;overflow-y:auto;overscroll-behavior:contain;touch-action:pan-y;scrollbar-width:thin;scrollbar-color:#8aa85d #1c2a34}#viewport #part-info:focus-visible{outline:2px solid #d8f88a;outline-offset:-2px}
+.beginner-catalog button[aria-pressed=true]{border-color:#d8f88a;background:#26372b;color:#d8f88a}
+.beginner-mode .instruments,.beginner-mode .phase-values,.beginner-mode .field-guide,.beginner-mode aside>section:not(:first-child),.beginner-mode aside>section:first-child>:not(.eyebrow):not(.beginner-panel):not(:has(#field-mode)){display:none}
+.beginner-catalog{margin:16px 0 22px;padding:16px;border:1px solid #34434f;border-radius:8px;background:#15212a}.beginner-catalog h2{margin:0;font:500 17px 'Space Grotesk',sans-serif}.beginner-catalog p{font-size:12px;color:#a5b1ba;line-height:1.5}.beginner-catalog>div{display:flex;flex-wrap:wrap;gap:7px}.beginner-catalog button{font-size:12px;padding:8px 11px}.beginner-catalog button:focus,.beginner-catalog button:hover{border-color:#d8f88a;color:#d8f88a}
+.beginner-mode #part-info{max-width:min(330px,calc(100% - 32px));max-height:45%;overflow:auto}.beginner-mode #part-info h3{margin:5px 0}.beginner-mode #part-info p{font-size:12px;line-height:1.55;white-space:pre-line}.beginner-mode #part-info .eyebrow{font-size:9px}
+.beginner-panel h2{font:500 25px 'Space Grotesk',sans-serif;letter-spacing:-.7px;margin:22px 0 10px}
+.beginner-panel p{font-size:13px;line-height:1.75;color:#b6c3cc}
+.beginner-steps{display:grid;gap:8px;margin:22px 0}
+.beginner-steps button{text-align:left;font-size:12px;padding:13px 10px}
+.beginner-steps button[aria-pressed=true]{border-color:#d8f88a;background:#26372b;color:#d8f88a}
+.beginner-explanation{border-left:3px solid #d8f88a;padding:2px 0 2px 14px;min-height:245px}
+.beginner-explanation h3{font-size:16px;line-height:1.5;margin:8px 0}
+.beginner-key{display:grid;gap:5px;margin:20px 0}.beginner-key span:first-child{color:#d8f88a}.beginner-key span:last-child{color:#46e4ed}
+.beginner-panel details{margin-top:22px;font-size:12px;line-height:1.6}.beginner-panel summary{cursor:pointer;color:#d8f88a}
+.beginner-mode .help-row:has(#field-mode){display:block}.beginner-mode label[for=field-mode]{display:block}.beginner-mode #field-mode{display:block;width:100%;max-width:100%;margin-top:10px}.beginner-mode .help-row:has(#field-mode)>.help-button{margin-top:4px}
+@media(max-width:720px){.beginner-explanation{min-height:0}.beginner-mode #field-caption{max-width:45%;text-align:right}.beginner-mode #viewport{height:430px}}
+.learning-path{border:1px solid #526442;border-radius:6px;padding:10px 12px;margin-bottom:16px;background:#17231f}
+.learning-path summary{cursor:pointer;font-size:12px;color:#d8f88a}
+#learning-current{float:right;color:#a5b1ba;font-size:11px}
+.learning-path>p{font-size:12px;line-height:1.5;margin:10px 0;max-width:75ch}
+.learning-path .connection-select{margin-top:10px}
+#learning-state{font-size:11px;color:#d8f88a}
+.learning-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.learning-path .control{max-width:450px;margin-bottom:0}
+.teaching-settings{margin:12px 0;font-size:11px;color:#a5b1ba}.teaching-settings summary{cursor:pointer}
+.rotor-operation{display:flex;gap:6px;margin:12px 0}.rotor-operation button{flex:1}.rotor-operation button[aria-pressed=true]{color:#d8f88a;border-color:#526442;background:#26372b}
+.motion-field{color:#fff}.motion-rotor{color:#46e4ed}
 .control-group{margin:18px 0 4px;color:var(--muted);font-size:11px;font-weight:600}.help-row{display:flex;align-items:center;gap:5px;min-width:0}.help-row>label{flex:1;min-width:0}.help-row .connection-select{gap:8px}.help-row select{min-width:0;max-width:175px}.help-button{flex:0 0 28px;width:28px;height:28px;border-radius:50%;padding:0;color:var(--muted);font:600 12px 'DM Sans',sans-serif;background:transparent}.help-tip{position:fixed;inset:auto;margin:0;max-width:min(260px,calc(100vw - 16px));padding:10px 12px;border:1px solid #526442;border-radius:6px;background:#1c2a34;color:#e7ecef;font-size:12px;line-height:1.5;box-shadow:0 4px 20px #0006}.control>.help-row label{display:flex;justify-content:space-between;gap:8px}.toggles>.help-row>label{width:auto}.help-row:has(.connection-select){align-items:baseline}
 .stepper-page #hold{margin-top:10px}.stepper-page #hold[aria-pressed=true]{color:#d8f88a;border-color:#526442}@media(max-width:720px){.stepper-page #part-info{max-width:180px;padding:10px;bottom:58px}.stepper-page #part-info p{font-size:10px;line-height:1.4}.stepper-page #part-info h3{font-size:12px;margin:5px 0}.stepper-page #part-info .eyebrow{font-size:8px}}
 .motor-nav{display:flex;gap:8px;padding:12px 3.3vw;border-bottom:1px solid #2b353e}.motor-nav a{padding:9px 14px;border:1px solid transparent;border-radius:6px;color:#8997a3;text-decoration:none;font-size:12px}.motor-nav a:hover{color:#edf1f3;background:#1e2831}.motor-nav a[aria-current=page]{color:#d8f88a;border-color:#526442;background:#1c2a24}.rotor-key{color:#6edbff}.stepper-terminals{display:grid;grid-template-columns:repeat(4,1fr);gap:16px 6px;text-align:center;padding:18px 12px;margin-top:12px;border:1px solid #34434f;border-radius:6px;background:#10171d;font:500 13px 'Space Grotesk',sans-serif}.stepper-terminals span{grid-column:span 2;font-size:11px}button:disabled{opacity:.45;cursor:not-allowed}.transport{flex-wrap:wrap}#power{margin-top:10px}select:focus-visible,a:focus-visible{outline:2px solid #d8f88a;outline-offset:4px}@media(max-width:720px){.motor-nav{padding:10px 16px}.motor-nav a{padding:9px 10px}.transport .speed{flex:1 1 180px}.transport>.hint{flex-basis:100%}.intro{gap:12px;flex-wrap:wrap}.view-top{font-size:9px}.view-bottom>span{max-width:60%;font-size:9px}}

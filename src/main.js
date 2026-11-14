@@ -1,10 +1,13 @@
 import * as THREE from 'three';
 import { createStage, material, ringGeometry, textSprite, electronTexture, canvasContext, arrow2d } from './lab-view.js';
 import { createInductionFieldView } from './induction-field-view.js';
-import { fieldDefaults } from './induction-field.js';
+import { fieldDefaults, rotorResponse } from './induction-field.js';
 import { statorWinding, statorSlots, statorSlotAngle } from './stator-winding.js';
 import { createPartOpacityControls } from './part-opacity.js';
 import { createControlHelp } from './control-help.js';
+import { createLearningPath } from './learning-path.js';
+import { createLearningOverlays } from './learning-overlays.js';
+import { createBeginnerModel } from './beginner-model.js';
 import './style.css';
 
 const $ = id => document.getElementById(id);
@@ -16,6 +19,7 @@ const cssColors = ['#ff876e', '#71d5b3', '#859dff'];
 const viewport = $('viewport');
 const { renderer, scene, camera, controls, grid, resetCamera } = createStage(viewport);
 const motor = new THREE.Group(); scene.add(motor);
+const learningOverlays = createLearningOverlays(motor);
 const physicalField = createInductionFieldView(motor);
 let realistic = false;
 const pickables = [];
@@ -52,10 +56,51 @@ for (let i = 0; i < statorSlots; i++) {
 slotHole.closePath(); coreShape.holes.push(slotHole);
 const slottedGeometry = new THREE.ExtrudeGeometry(coreShape, { depth: 1.9, bevelEnabled: false, curveSegments: 64 });
 slottedGeometry.translate(0, 0, -.95);
-const slottedCore = mesh(slottedGeometry, statorSteel, stator);
+const slottedCore = new THREE.Group(); stator.add(slottedCore);
+for (let i = 0; i < 32; i++) {
+  const sheet = mesh(slottedGeometry, i % 2 ? statorSteel : laminationSteel, slottedCore, -.95 + (i + .5) * 1.9 / 32);
+  sheet.scale.z = .88 / 32;
+}
 for (let z = -.9; z <= .91; z += .12) ring(1.59, 1.48, .025, laminationSteel, stator, z);
+const slotInsulation = part('Nutisolation', 'Die Nutisolation trennt Kupferwicklung und Eisenkern elektrisch.');
+const slotWedges = part('Nutkeil', 'Der Nutkeil verschließt die Nut zum Luftspalt und hält die Leiter fest.');
+slotInsulation.userData.catalogOnly = slotWedges.userData.catalogOnly = true;
+const linerShape = new THREE.Shape();
+const linerOutline = [[1.245, -.069], [1.455, -.080], [1.455, .080], [1.245, .069], [1.245, .057], [1.443, .068], [1.443, -.068], [1.245, -.057]];
+linerOutline.forEach(([x, y], i) => i ? linerShape.lineTo(x, y) : linerShape.moveTo(x, y));
+linerShape.closePath();
+const linerGeometry = new THREE.ExtrudeGeometry(linerShape, { depth: 2.02, bevelEnabled: false });
+linerGeometry.translate(0, 0, -1.01);
+const linerEdges = new THREE.Group(); slotInsulation.add(linerEdges); linerEdges.visible = false;
+const linerEdgeGeometry = new THREE.EdgesGeometry(linerGeometry, 25);
+const linerEdgeMaterial = new THREE.LineBasicMaterial({ color: 0xffd99a, transparent: true, opacity: .85, depthTest: false, depthWrite: false });
+const linerMaterial = material(0xf1d69e, { metalness: 0, roughness: .8, transparent: true, opacity: .75, depthWrite: false });
+const wedgeMaterial = material(0x99bfc0, { metalness: 0, roughness: .7, transparent: true, opacity: .8, depthWrite: false });
+for (let i = 0; i < statorSlots; i++) {
+  const angle = statorSlotAngle(i);
+  mesh(linerGeometry, linerMaterial, slotInsulation).rotation.z = angle;
+  const outline = new THREE.LineSegments(linerEdgeGeometry, linerEdgeMaterial);
+  outline.rotation.z = angle; outline.renderOrder = 3; linerEdges.add(outline);
+  const wedge = mesh(new THREE.BoxGeometry(.025, .125, 1.92), wedgeMaterial, slotWedges);
+  wedge.position.set(1.235 * Math.cos(angle), 1.235 * Math.sin(angle), 0); wedge.rotation.z = angle;
+}
 const winding = part('Drehstromwicklung', 'Drei Phasen, um 120° versetzt. Verteilt: zwölf Windungen je Phase in 18 Nuten.');
 const coils = [];
+const windingHeads = [];
+function windingMeshes(path, segments, radius, mat, parent) {
+  const geometry = new THREE.TubeGeometry(path, segments, radius, 8, false);
+  const headGeometry = geometry.clone(), headIndices = [], activeIndices = [];
+  const indices = geometry.index.array;
+  // Split the actual winding surface, so selecting the heads leaves the slot conductors dimmed.
+  for (let i = 0; i < segments; i++) {
+    const target = Math.abs(path.getPointAt((i + .5) / segments).z) > .951 ? headIndices : activeIndices;
+    for (let j = i * 48; j < (i + 1) * 48; j++) target.push(indices[j]);
+  }
+  geometry.setIndex(activeIndices); headGeometry.setIndex(headIndices);
+  mesh(geometry, mat, parent);
+  const heads = mesh(headGeometry, mat, parent); heads.userData.catalogOnly = true;
+  windingHeads.push(heads);
+}
 for (let phaseIndex = 0; phaseIndex < 3; phaseIndex++) {
   const a = phaseIndex * TAU / 3 + Math.PI / 2, radius = 1.3 + phaseIndex * .035;
   const z = 1.09 + phaseIndex * .12;
@@ -68,7 +113,7 @@ for (let phaseIndex = 0; phaseIndex < 3; phaseIndex++) {
   path.add(new THREE.CatmullRomCurve3(Array.from({ length: 33 }, (_, j) => point(a + Math.PI + j / 32 * (Math.PI - .2), -z))));
   const mat = material(colors[phaseIndex], { emissive: colors[phaseIndex], emissiveIntensity: .15, roughness: .3 });
   const body = new THREE.Group(); winding.add(body);
-  mesh(new THREE.TubeGeometry(path, 160, .065, 8, false), mat, body);
+  windingMeshes(path, 160, .065, mat, body);
   coils.push({ mat, phase: phaseIndex, radius, path, body, distributed: false });
 }
 for (let phaseIndex = 0; phaseIndex < 3; phaseIndex++) {
@@ -76,7 +121,7 @@ for (let phaseIndex = 0; phaseIndex < 3; phaseIndex++) {
   for (const s of layout.segments) path.add(new THREE.LineCurve3(new THREE.Vector3(...s.a), new THREE.Vector3(...s.b)));
   const mat = material(colors[phaseIndex], { emissive: colors[phaseIndex], emissiveIntensity: .15, roughness: .3 });
   const body = new THREE.Group(); winding.add(body);
-  mesh(new THREE.TubeGeometry(path, 1536, .016, 6, false), mat, body);
+  windingMeshes(path, 1536, .016, mat, body);
   coils.push({ mat, phase: phaseIndex, path, body, distributed: true, sides: layout.sides });
 }
 const terminals = part('Klemmenkasten · Sternschaltung', 'U2, V2 und W2 bilden den Sternpunkt. PE schützt das Gehäuse; kein Neutralleiter.');
@@ -120,12 +165,38 @@ mesh(new THREE.TubeGeometry(new THREE.LineCurve3(pe, new THREE.Vector3(1.56, .1,
 label3d('PE', new THREE.Vector3(1.15, 2.39, .03), '#d8f88a', .32);
 const rotorPart = part('Rotor · Kurzschlusskäfig', 'Das Drehfeld induziert axiale Ströme in den Käfigstäben. Die Endringe schließen die Strompfade. Der Rotor dreht etwas langsamer als das Feld: Schlupf.', 1.6);
 const rotor = new THREE.Group(); rotorPart.add(rotor);
-const rotorCore = cylinder(.96, 1.85, material(0x687782, { roughness: .55 }), rotor);
+const rotorCore = new THREE.Group(); rotor.add(rotorCore);
+rotorCore.userData.catalogOnly = true;
+const rotorSheets = [material(0x91a5b4, { roughness: .55 }), material(0xc1ced6, { roughness: .5 })];
+const rotorProfile = new THREE.Shape();
+const rotorOuter = 1.04, barPitch = 1.005, grooveRadius = .061;
+const grooveHalfAngle = Math.acos((rotorOuter ** 2 + barPitch ** 2 - grooveRadius ** 2) / (2 * rotorOuter * barPitch));
+const grooveStart = Math.atan2(-rotorOuter * Math.sin(grooveHalfAngle), rotorOuter * Math.cos(grooveHalfAngle) - barPitch);
+// Open grooves cut into each lamination; the copper bars sit inside, not outside the iron.
+for (let i = 0; i < 22; i++) {
+  const angle = i * TAU / 22;
+  for (let j = 0; j <= 16; j++) {
+    const arc = grooveStart + (-TAU - 2 * grooveStart) * j / 16;
+    const x = barPitch + grooveRadius * Math.cos(arc), y = grooveRadius * Math.sin(arc);
+    const px = x * Math.cos(angle) - y * Math.sin(angle), py = x * Math.sin(angle) + y * Math.cos(angle);
+    if (i === 0 && j === 0) rotorProfile.moveTo(px, py); else rotorProfile.lineTo(px, py);
+  }
+  rotorProfile.absarc(0, 0, rotorOuter, angle + grooveHalfAngle, (i + 1) * TAU / 22 - grooveHalfAngle, false);
+}
+rotorProfile.closePath();
+const shaftHole = new THREE.Path(); shaftHole.absarc(0, 0, .195, 0, TAU, true); rotorProfile.holes.push(shaftHole);
+const sheetThickness = 1.85 / 32 * .78;
+const rotorSheetGeometry = new THREE.ExtrudeGeometry(rotorProfile, { depth: sheetThickness, bevelEnabled: false, curveSegments: 6 });
+rotorSheetGeometry.translate(0, 0, -sheetThickness / 2);
+ring(.94, .195, 1.85, material(0x15212a, { roughness: .9 }), rotorCore);
+for (let i = 0; i < 32; i++) {
+  mesh(rotorSheetGeometry, rotorSheets[i % 2], rotorCore, -.925 + (i + .5) * 1.85 / 32);
+}
 const rotorCage = new THREE.Group(); rotor.add(rotorCage);
 const bars = [];
 for (let i = 0; i < 22; i++) {
   const a = i * TAU / 22;
-  const bar = cylinder(.047, 2.04, copper, rotorCage);
+  const bar = cylinder(.052, 2.04, copper, rotorCage);
   bar.position.x = Math.cos(a) * 1.005; bar.position.y = Math.sin(a) * 1.005;
   bars.push(bar);
 }
@@ -134,6 +205,7 @@ const shaft = part('Welle', 'Die Welle überträgt das elektromagnetische Drehmo
 cylinder(.19, 4.5, steel, shaft);
 const shaftKey = mesh(new THREE.BoxGeometry(.075, .06, .55), material(0xc6d0d8), shaft, 1.92);
 shaftKey.position.y = .19;
+shaftKey.userData.catalogOnly = true;
 const shaftMark = mesh(new THREE.BoxGeometry(.14, .035, .012), darkSteel, shaft, 2.256);
 shaftMark.position.x = .06;
 const housing = part('Motorgehäuse', 'Das Gehäuse schützt den Motor. Die Kühlrippen vergrößern die Oberfläche für die Wärmeabgabe.', -1.1);
@@ -143,10 +215,51 @@ for (let i = 0; i < 24; i++) {
   const fin = mesh(new THREE.BoxGeometry(.12, .16, 2.2), darkSteel, housing);
   fin.position.set(Math.cos(a) * 1.82, Math.sin(a) * 1.82, 0); fin.rotation.z = a - Math.PI / 2;
 }
+for (const x of [-1.15, 1.15]) {
+  const foot = mesh(new THREE.BoxGeometry(.65, .16, 2.4), darkSteel, housing);
+  foot.position.set(x, -1.87, 0);
+  const support = mesh(new THREE.BoxGeometry(.22, .48, 1.8), darkSteel, housing);
+  support.position.set(x, -1.62, 0);
+}
 const front = part('Lagerschild vorn', 'Das Lagerschild trägt das Wellenlager und hält den Rotor präzise im Luftspalt.', 3.3);
-ring(1.64, .31, .16, steel, front, 1.65); ring(.34, .2, .25, copper, front, 1.65);
+ring(1.64, .45, .16, steel, front, 1.65);
 const rear = part('Lagerschild hinten', 'Zweites Wellenlager und rückwärtiger Abschluss des Motors.', -3.3);
-ring(1.64, .31, .16, steel, rear, -1.65); ring(.34, .2, .25, copper, rear, -1.65);
+ring(1.64, .45, .16, steel, rear, -1.65);
+const fan = part('Lüfterrad', 'Das Lüfterrad dreht mit der Welle und bewegt Kühlluft über die Gehäuserippen.', -3.3);
+fan.userData.catalogOnly = true;
+const fanMaterial = material(0x93a9b7, { metalness: .15, roughness: .6, transparent: true, opacity: .8, depthWrite: false });
+ring(.35, .195, .25, fanMaterial, fan, -2.02);
+ring(1.35, .34, .045, fanMaterial, fan, -2.13);
+for (let i = 0; i < 12; i++) {
+  const angle = i * TAU / 12;
+  const blade = mesh(new THREE.BoxGeometry(.94, .055, .22), fanMaterial, fan, -2.0);
+  blade.position.x = .84 * Math.cos(angle); blade.position.y = .84 * Math.sin(angle); blade.rotation.z = angle;
+}
+const bearings = [];
+const bearingPitch = .3075, bearingBallRadius = .0525;
+for (const [z, offset, name] of [[1.65, 3.3, 'Wellenlager vorn'], [-1.65, -3.3, 'Wellenlager hinten']]) {
+  const bearing = part(name, 'Das Kugellager stützt die Welle im Lagerschild. Es hält den Rotor in der Mitte und ermöglicht eine reibungsarme Drehung.', offset);
+  const race = material(0xc4d3dc, { metalness: .85, roughness: .22, transparent: true, opacity: .6, depthWrite: false });
+  ring(.44, .36, .24, race, bearing, z);
+  const inner = new THREE.Group(), cage = new THREE.Group();
+  bearing.add(inner, cage);
+  ring(.255, .195, .24, race, inner, z);
+  const mark = mesh(new THREE.BoxGeometry(.045, .018, .008), darkSteel, inner, z + .124);
+  mark.position.x = .225;
+  const balls = [];
+  for (let i = 0; i < 10; i++) {
+    const angle = i * TAU / 10;
+    const ball = mesh(new THREE.SphereGeometry(bearingBallRadius, 16, 12), race, cage, z);
+    ball.position.x = bearingPitch * Math.cos(angle); ball.position.y = bearingPitch * Math.sin(angle);
+    // Small surface marks make the rolling of otherwise symmetric spheres visible.
+    for (const side of [-1, 1]) {
+      const dot = mesh(new THREE.SphereGeometry(.012, 8, 6), darkSteel, ball);
+      dot.position.set(.025, 0, side * .046);
+    }
+    balls.push(ball);
+  }
+  bearings.push({ part: bearing, inner, cage, balls });
+}
 housing.visible = false; front.visible = rear.visible = false;
 
 const magnetic = new THREE.Group(); motor.add(magnetic);
@@ -190,7 +303,7 @@ for (const coil of coils) {
   const arrow = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 1.65), .7, colors[coil.phase], .15, .085);
   conductorFields.add(arrow); phaseFields.push({ arrow, axis });
 }
-for (let i = 0; i < 11; i++) conductorDisplay(null, rotorFields, 0x6edbff, 1.005, i * TAU / 11, 0, 0, true);
+for (let i = 0; i < 22; i++) conductorDisplay(null, rotorFields, 0x6edbff, 1.005, i * TAU / 22, 0, 0, true);
 const statorElectrons = new THREE.Group(); motor.add(statorElectrons);
 const rotorElectrons = new THREE.Group(); rotor.add(rotorElectrons);
 const electronPaths = new THREE.Group(); motor.add(electronPaths); electronPaths.visible = false;
@@ -269,17 +382,19 @@ for (let i = -3; i <= 3; i++) {
 }
 const orbit = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(Array.from({ length: 100 }, (_, i) => new THREE.Vector3(1.95 * Math.cos(i / 100 * TAU), 1.95 * Math.sin(i / 100 * TAU), 0))), new THREE.LineBasicMaterial({ color: 0x567248, transparent: true, opacity: .65 })); magnetic.add(orbit);
 const forces = [], currents = [];
-for (let i = 0; i < 11; i++) {
-  const a = i * TAU / 11;
+for (let i = 0; i < 22; i++) {
+  const a = i * TAU / 22;
   const pos = new THREE.Vector3(1.1 * Math.cos(a), 1.1 * Math.sin(a), 1.12);
   const force = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), pos, .5, 0xffd16e, .12, .08); forceGroup.add(force); forces.push({ arrow: force, a });
   const current = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(Math.cos(a) * 1.04, Math.sin(a) * 1.04, 0), .5, 0x6edbff, .12, .07); currentGroup.add(current); currents.push({ arrow: current, a });
 }
 
-let running = true, direction = 1, phase = 0, rotorAngle = 0, simTime = 0;
+let running = true, direction = 1, phase = 0, rotorAngle = 0, bearingAngle = 0, simTime = 0;
 let last = performance.now();
 const values = { frequency: 50, load: 35, speed: 10 ** -2.7, explode: 0 };
-const slip = () => .008 + values.load / 100 * .12;
+const slip = () => $('rotor-held').checked ? 1 : .008 + values.load / 100 * .12;
+const singlePhase = () => !realistic && $('teaching-phases').value === '1';
+const teachingRotor = () => rotorResponse({ frequency: values.frequency, slip: slip(), direction, gain: windingGain() });
 const number = n => Math.round(n).toLocaleString('de-DE');
 function readouts() {
   $('frequency-value').textContent = `${values.frequency} Hz`;
@@ -293,7 +408,11 @@ function readouts() {
   $('sync-rpm').innerHTML = `${number(values.frequency * 60)} <small>min⁻¹</small>`;
   $('rotor-rpm').innerHTML = `${number(values.frequency * 60 * (1 - slip()))} <small>min⁻¹</small>`;
   $('slip-value').innerHTML = `${(slip() * 100).toFixed(1).replace('.', ',')} <small>%</small>`;
-  $('torque-value').innerHTML = `${values.load} <small>%</small>`;
+  const held = $('rotor-held').checked;
+  $('torque-value').innerHTML = held ? '<small>Rotor blockiert</small>' : `${values.load} <small>%</small>`;
+  $('load-hint').hidden = !held;
+  $('rotor-lock').setAttribute('aria-pressed', String(held));
+  $('rotor-release').setAttribute('aria-pressed', String(!held));
   const gain = windingGain(), delta = connection === 'delta';
   const volts = 400 / Math.sqrt(3) * gain, amps = volts / 100;
   $('connection-values').innerHTML = `Wicklung: <b>${volts.toLocaleString('de-DE', { maximumFractionDigits: 1 })} V · ${amps.toFixed(2).replace('.', ',')} A</b><br>Leiter: <b>${(amps * (delta ? Math.sqrt(3) : 1)).toFixed(2).replace('.', ',')} A</b>`;
@@ -312,6 +431,11 @@ $('connection').addEventListener('change', e => {
   readouts();
 });
 for (const id of Object.keys(values)) $(id).addEventListener('input', e => { values[id] = id === 'speed' ? 10 ** Number(e.target.value) : Number(e.target.value); readouts(); });
+$('rotor-held').addEventListener('change', readouts);
+for (const [id, held] of [['rotor-lock', true], ['rotor-release', false]]) $(id).onclick = () => {
+  $('rotor-held').checked = held;
+  $('rotor-held').dispatchEvent(new Event('change', { bubbles: true }));
+};
 for (const [id, group] of [['windings', winding], ['winding-currents', windingCurrents], ['conductor-fields', conductorFields], ['rotor-fields', rotorFields], ['magnetic', magnetic], ['electric', electric], ['forces', forceGroup], ['currents', currentGroup]]) $(id).addEventListener('change', e => { group.visible = e.target.checked; if (id === 'electric') $('electric-note').hidden = !e.target.checked; });
 for (const [id, object] of [['terminals', terminals], ['terminal-labels', terminalLabels], ['stator-electrons', statorElectrons], ['rotor-electrons', rotorElectrons], ['stator-core', stator], ['rotor-core', rotorCore], ['rotor-cage', rotorCage], ['shaft-visible', shaft], ['grid-visible', grid], ['info-visible', null]]) $(id).addEventListener('change', e => { if (object) object.visible = e.target.checked; else $('part-info').hidden = !e.target.checked; });
 const partOpacity = createPartOpacityControls([
@@ -339,9 +463,84 @@ function preset(kind) {
   document.querySelectorAll('.toggles:not([data-field-options]) input[type="checkbox"]').forEach(input => { input.checked = active.includes(input.id); input.dispatchEvent(new Event('change')); });
 }
 document.querySelectorAll('[data-preset]').forEach(button => button.onclick = () => preset(button.dataset.preset));
-preset('overview');
+const focusMaterials = [];
+const airGap = new THREE.Mesh(ringGeometry(1.2, 1.08, 1.9), material(0x6edbff, { transparent: true, opacity: .5, emissive: 0x6edbff, emissiveIntensity: .5, depthWrite: false }));
+airGap.visible = false; motor.add(airGap);
+const focusTargets = {
+  Stator: [stator, winding, slotInsulation, slotWedges], Blechpaket: [stator], Ständerblechpaket: [stator], 'Stator · Blechpaket': [stator],
+  'Spulen / Wicklungen': [winding], Ständerwicklung: [winding], Drehstromwicklung: [winding], Wickelköpfe: windingHeads,
+  Nutisolation: [slotInsulation], Nutkeil: [slotWedges], Läuferblechpaket: [rotorCore],
+  Rotor: [rotor], 'Rotor · Kurzschlusskäfig': [rotor], Rotorkäfig: [rotorCage],
+  Kurzschlussringe: rotorCage.children.filter(object => object.geometry?.type === 'ExtrudeGeometry'),
+  Welle: [shaft], 'Welle mit Passfeder': [shaft], Passfeder: [shaftKey], Lüfterrad: [fan], Gehäuse: [housing], Motorgehäuse: [housing],
+  Kühlrippen: housing.children.filter(object => object.geometry?.parameters.width === .12),
+  Motorfüße: housing.children.filter(object => [.65, .22].includes(object.geometry?.parameters.width)),
+  Lagerschilde: [front, rear], 'Lagerschild vorn': [front], 'Lagerschild hinten': [rear],
+  Lager: bearings.map(bearing => bearing.part),
+  'Wellenlager vorn': [bearings[0].part], 'Wellenlager hinten': [bearings[1].part],
+  Klemmen: [terminals], Zuleitungen: [...terminals.children.filter(object => object.geometry?.type === 'TubeGeometry'), ...coils.map(coil => coil.leads)],
+};
+function focusPart(name) {
+  for (const { object, source, display, renderOrder } of focusMaterials) {
+    object.material = source; object.renderOrder = renderOrder; display.dispose();
+  }
+  focusMaterials.length = 0; airGap.visible = name === 'Luftspalt';
+  linerEdges.visible = name === 'Nutisolation';
+  const targets = focusTargets[name?.startsWith('Klemmenkasten') ? 'Klemmen' : name];
+  if (!targets && !airGap.visible) return;
+  const selected = new Set();
+  for (const target of targets || []) target.traverse(object => { if (object.isMesh) selected.add(object); });
+  const context = new Set();
+  const inspectSlot = name === 'Nutisolation' || name === 'Nutkeil';
+  if (name === 'Läuferblechpaket') rotorCage.traverse(object => { if (object.isMesh) context.add(object); });
+  if (inspectSlot) {
+    winding.traverse(object => { if (object.isMesh) context.add(object); });
+    if (name === 'Nutkeil') slotInsulation.traverse(object => { if (object.isMesh) context.add(object); });
+  }
+  for (const part of parts) part.traverse(object => {
+    if (!object.isMesh) return;
+    const source = object.material, display = source.clone(), active = selected.has(object);
+    const renderOrder = object.renderOrder;
+    const contextual = context.has(object);
+    const translucentLiner = inspectSlot && object.geometry === linerGeometry;
+    const mutedConductor = contextual && inspectSlot && !translucentLiner;
+    const slotConductor = mutedConductor && !windingHeads.includes(object);
+    display.opacity = translucentLiner ? .08 : active ? 1 : mutedConductor ? (slotConductor ? .75 : .35) : contextual ? .9 : Math.min(.06, source.opacity * .15);
+    display.transparent = !active || translucentLiner;
+    display.depthWrite = active && !translucentLiner;
+    if (slotConductor) {
+      // Inspection-only X-ray pass: preserve the actual slot position but draw above the liner.
+      display.depthTest = false; display.depthWrite = false; object.renderOrder = 4;
+    }
+    if (active && display.emissive) display.emissive.set(0x4fbd9d);
+    object.material = display;
+    focusMaterials.push({ object, source, display, active, contextual, translucentLiner, mutedConductor, renderOrder });
+  });
+}
+function showPartInfo({ name, description }) {
+  if ($('field-mode').value === 'beginner') focusPart(name);
+  $('part-name').textContent = name;
+  $('part-description').textContent = $('field-mode').value === 'beginner' ? beginner.description(name) || description : description;
+  $('part-info').hidden = false;
+  $('part-info').tabIndex = 0;
+  $('part-info').setAttribute('role', 'region');
+  $('part-info').setAttribute('aria-labelledby', 'part-name');
+}
+const beginner = createBeginnerModel(motor, { resetCamera, pickables, showPartInfo, clearFocus: () => focusPart(null) });
 $('field-mode').onchange = () => {
   realistic = $('field-mode').value === 'physical';
+  if ($('field-mode').value === 'beginner') {
+    beginner.activate();
+    return;
+  }
+  beginner.deactivate();
+  focusPart(null);
+  if ($('field-mode').value !== 'learning') {
+    preset('overview');
+    $('teaching-phases').value = '3';
+    $('rotor-held').checked = $('probe-magnet').checked = $('focus-pair').checked = false;
+    readouts();
+  }
   if (realistic) {
     $('stator-core').checked = $('rotor-core').checked = true;
     stator.visible = rotorCore.visible = true;
@@ -360,20 +559,19 @@ $('field-mode').onchange = () => {
 function setRunning(value) { running = value; $('play').textContent = running ? 'Ⅱ Pause' : '▶ Start'; $('state').textContent = running ? 'SIMULATION LÄUFT' : 'SIMULATION ANGEHALTEN'; }
 $('play').onclick = () => setRunning(!running);
 $('step').onclick = () => { setRunning(false); advance(1 / (values.frequency * 48)); };
+$('learning-time').oninput = e => {
+  setRunning(false);
+  advance((Number(e.target.value) * Math.PI / 180 - phase) / (direction * TAU * values.frequency));
+};
 $('direction').onclick = () => { direction *= -1; $('direction').textContent = `${direction > 0 ? '↻' : '↺'} Richtung umkehren`; };
 $('reset').onclick = resetCamera;
 $('front').onclick = () => { camera.position.set(0, .45, 10); controls.target.set(0, .45, 0); controls.update(); };
-const lessons = [
-  ['Drehfeld', 'Drei um 120° versetzte Ströme erzeugen das Drehfeld.'],
-  ['Induktion', 'Schlupf induziert Rotorstrom. Ohne Schlupf keine Induktion.'],
-  ['Drehmoment', 'Strom im Magnetfeld erzeugt Kraft: F = I · l × B.'],
-];
-document.querySelectorAll('[data-lesson]').forEach(button => button.onclick = () => {
-  const index = Number(button.dataset.lesson);
-  $('lesson-number').textContent = `PRINZIP / 0${index + 1}`;
-  $('lesson-title').textContent = lessons[index][0]; $('lesson-text').textContent = lessons[index][1];
-  document.querySelectorAll('[data-lesson]').forEach(b => b.classList.toggle('active', b === button));
+const learning = createLearningPath({
+  reset() { phase = rotorAngle = bearingAngle = simTime = 0; flows.forEach(flow => { flow.drift = 0; }); learningOverlays.reset(); readouts(); },
+  front() { $('front').onclick(); },
 });
+if ($('field-mode').value === 'beginner') $('field-mode').onchange();
+controls.addEventListener('start', learning.changed);
 createControlHelp();
 const raycaster = new THREE.Raycaster();
 let down = { x: 0, y: 0 };
@@ -382,14 +580,16 @@ renderer.domElement.addEventListener('pointerup', e => {
   if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return;
   const rect = renderer.domElement.getBoundingClientRect();
   raycaster.setFromCamera(new THREE.Vector2((e.clientX - rect.left) / rect.width * 2 - 1, -(e.clientY - rect.top) / rect.height * 2 + 1), camera);
-  const visible = pickables.filter(obj => { let p = obj; while (p) { if (!p.visible) return false; p = p.parent; } return true; });
-  const hit = raycaster.intersectObjects(visible, false)[0];
+  const visible = pickables.filter(obj => { let p = obj; while (p) { if (!p.visible || ($('field-mode').value === 'beginner' && p.userData.catalogOnly)) return false; p = p.parent; } return true; });
+  const hits = raycaster.intersectObjects(visible, false);
+  const hit = hits.find(hit => hit.object.isSprite) || hits[0];
   if (!hit) return;
   let obj = hit.object; while (obj && !obj.userData.name) obj = obj.parent;
-  if (obj) { $('part-name').textContent = obj.userData.name; $('part-description').textContent = obj.userData.description; }
+  if (obj && ($('field-mode').value === 'beginner' || $('info-visible').checked)) showPartInfo(obj.userData);
 });
 
 function instruments() {
+  document.querySelector('.instrument h2').textContent = singlePhase() ? 'Ein Spulenstrom wechselt die Richtung' : 'Drei Ströme, 120° versetzt';
   const { ctx, w, h } = canvasContext('scope');
   const left = 25, right = w - 10, mid = h / 2 - 4, amp = h * .31 / 2, gain = windingGain();
   ctx.strokeStyle = '#2a3741'; ctx.lineWidth = 1;
@@ -398,6 +598,7 @@ function instruments() {
   ctx.font = '9px sans-serif'; ctx.fillStyle = '#83939e'; ctx.fillText('+2', 0, mid - amp * 2 + 3); ctx.fillText('0', 8, mid + 3); ctx.fillText('−2', 0, mid + amp * 2 + 3);
   ctx.fillText('−T', left, h - 3); ctx.fillText('0', (left + right) / 2 - 3, h - 3); ctx.fillText('+T', right - 14, h - 3);
   for (let k = 0; k < 3; k++) {
+    if (singlePhase() && k > 0) continue;
     ctx.strokeStyle = cssColors[k]; ctx.lineWidth = 1.8; ctx.beginPath();
     for (let x = left; x <= right; x++) { const t = ((x - left) / (right - left) - .5) * TAU * 2; const y = mid - gain * Math.cos(phase + direction * t - k * TAU / 3) * amp; if (x === left) ctx.moveTo(x, y); else ctx.lineTo(x, y); } ctx.stroke();
     const y = mid - gain * Math.cos(phase - k * TAU / 3) * amp; ctx.fillStyle = cssColors[k]; ctx.beginPath(); ctx.arc((left + right) / 2, y, 3.5, 0, TAU); ctx.fill();
@@ -406,45 +607,70 @@ function instruments() {
   const v = canvasContext('field'), c = v.ctx, cx = v.w / 2, cy = v.h / 2, r = Math.min(v.w / 2 - 24, v.h / 2 - 15);
   c.strokeStyle = '#32414c'; c.lineWidth = 1; c.beginPath(); c.arc(cx, cy, r, 0, TAU); c.stroke();
   for (let k = 0; k < 3; k++) {
+    if (singlePhase() && k > 0) continue;
     const a = k * TAU / 3, current = gain / Math.sqrt(3) * Math.cos(phase - a);
     c.setLineDash([2, 4]); c.beginPath(); c.moveTo(cx - Math.cos(a) * r, cy + Math.sin(a) * r); c.lineTo(cx + Math.cos(a) * r, cy - Math.sin(a) * r); c.stroke(); c.setLineDash([]);
     arrow2d(c, cx, cy, Math.cos(a) * current * r * 2 / 3, -Math.sin(a) * current * r * 2 / 3, cssColors[k]);
     c.fillStyle = cssColors[k]; c.font = '10px sans-serif'; c.fillText(['U', 'V', 'W'][k], cx + Math.cos(a) * (r + 10) - 3, cy - Math.sin(a) * (r + 10) + 3);
   }
-  arrow2d(c, cx, cy, Math.cos(phase) * r * gain / Math.sqrt(3), -Math.sin(phase) * r * gain / Math.sqrt(3), '#e8f5d4', 3);
-  c.fillStyle = '#e8f5d4'; c.font = '10px sans-serif'; c.fillText('B', cx + Math.cos(phase) * r * gain / Math.sqrt(3) * .8 + 8, cy - Math.sin(phase) * r * gain / Math.sqrt(3) * .8 - 6);
+  arrow2d(c, cx, cy, Math.cos(phase) * r * gain / Math.sqrt(3), singlePhase() ? 0 : -Math.sin(phase) * r * gain / Math.sqrt(3), '#e8f5d4', 3);
+  c.fillStyle = '#e8f5d4'; c.font = '10px sans-serif'; c.fillText('B', cx + Math.cos(phase) * r * gain / Math.sqrt(3) * .8 + 8, cy - (singlePhase() ? 0 : Math.sin(phase)) * r * gain / Math.sqrt(3) * .8 - 6);
 }
 function advance(dt) {
   const oldPhase = phase, oldRotor = rotorAngle;
+  const response = teachingRotor();
   simTime += dt; phase = (phase + direction * TAU * values.frequency * dt) % TAU;
-  rotorAngle = (rotorAngle + direction * TAU * values.frequency * (1 - slip()) * dt) % TAU;
+  if (!$('rotor-held').checked) {
+    const rotation = direction * TAU * values.frequency * (1 - slip()) * dt;
+    rotorAngle = (rotorAngle + rotation) % TAU;
+    bearingAngle += rotation;
+  }
   const amplitude = Number($('electron-drift').value) / 6 * .7 * windingGain();
   for (const flow of flows) {
     // Integrate -I exactly over the step: AC electrons oscillate, not circulate steadily.
     const delta = flow.rotating
-      ? Math.sin(rotorAngle - phase + flow.phaseIndex) - Math.sin(oldRotor - oldPhase + flow.phaseIndex)
+      ? singlePhase()
+        ? -direction * Math.sin(oldPhase + direction * Math.PI * values.frequency * dt) * Math.sin(flow.phaseIndex + oldRotor + direction * Math.PI * values.frequency * (1 - slip()) * dt) * TAU * values.frequency * dt
+        : Math.cos(response.lag) * (Math.sin(rotorAngle - phase + flow.phaseIndex + response.lag) - Math.sin(oldRotor - oldPhase + flow.phaseIndex + response.lag))
       : -(flow.weights
         ? flow.weights.reduce((sum, weight, k) => sum + weight * (Math.sin(phase - k * TAU / 3) - Math.sin(oldPhase - k * TAU / 3)), 0)
         : Math.sin(phase - flow.phaseIndex * TAU / 3) - Math.sin(oldPhase - flow.phaseIndex * TAU / 3)) / direction;
     flow.drift += amplitude * delta;
   }
 }
-function updateMotor() {
+function updateMotor(dt) {
   const distributed = $('winding-layout').value === 'distributed';
+  const response = teachingRotor(), rotorScale = response.amplitude / (.006 / .045);
+  const single = singlePhase(), focus = !realistic && $('focus-pair').checked;
+  const fieldAngle = single ? (Math.cos(phase) >= 0 ? 0 : Math.PI) : phase;
+  const fieldStrength = single ? Math.abs(Math.cos(phase)) : 1;
   simpleCore.visible = !distributed; slottedCore.visible = distributed;
-  for (const coil of coils) coil.body.visible = coil.leads.visible = coil.distributed === distributed;
+  slotInsulation.visible = slotWedges.visible = distributed && winding.visible;
+  for (const coil of coils) coil.body.visible = coil.leads.visible = coil.distributed === distributed && (!single || coil.phase === 0);
+  bars.forEach((bar, i) => { bar.visible = !focus || i === 0 || i === 11; });
   for (const group of parts) group.position.z = group.userData.offset * values.explode / 100;
   housing.visible = $('housing').checked;
   front.visible = rear.visible = housing.visible || values.explode > 0;
+  fan.visible = front.visible && $('shaft-visible').checked;
+  fan.rotation.z = rotorAngle;
+  for (const bearing of bearings) {
+    bearing.part.visible = front.visible;
+    bearing.inner.rotation.z = rotorAngle;
+    // Ideal rolling with a fixed outer race; use an unwrapped angle to avoid jumps.
+    bearing.cage.rotation.z = bearingAngle * (bearingPitch - bearingBallRadius) / (2 * bearingPitch);
+    const spin = -bearingAngle * (bearingPitch - bearingBallRadius) / (2 * bearingBallRadius);
+    for (const ball of bearing.balls) ball.rotation.z = spin - bearing.cage.rotation.z;
+  }
   rotor.rotation.z = rotorAngle; shaft.rotation.z = rotorAngle;
-  magnetic.rotation.z = phase;
+  magnetic.rotation.z = fieldAngle;
+  magnetic.scale.set(1, Math.max(.05, fieldStrength), 1);
   const gain = windingGain();
-  fieldArrow.setLength(1.7 * gain, .24, .15);
+  fieldArrow.setLength(Math.max(.02, 1.7 * gain * fieldStrength), .24, .15);
   const density = Number($('electron-density').value), size = Number($('electron-size').value) / 100 * .4;
   terminalElectrons.visible = statorElectrons.visible;
   terminalElectronPaths.visible = electronPaths.visible && statorElectrons.visible;
   for (const flow of flows) {
-    const active = (!flow.mode || flow.mode === connection) && (flow.distributed === null || flow.distributed === distributed);
+    const active = (!flow.mode || flow.mode === connection) && (flow.distributed === null || flow.distributed === distributed) && (flow.rotating ? !focus || flow.phaseIndex === 0 : !single || (flow.phaseIndex === 0 && !flow.weights));
     flow.particles.visible = flow.line.visible = active;
     flow.particles.material.size = size;
     flow.particles.material.depthTest = !$('electron-xray').checked;
@@ -470,18 +696,23 @@ function updateMotor() {
   }
   // For ideal uniform rotating B: A_z = B(y cos(phi) - x sin(phi)), E_z = -dA_z/dt.
   for (const { arrow, a } of electricArrows) {
-    const field = gain * direction * Math.cos(a - phase) * values.frequency / 50;
+    const field = gain * direction * (single ? Math.sin(phase) * Math.sin(a) : Math.cos(a - phase)) * values.frequency / 50;
     arrow.visible = Math.abs(field) > .015;
     arrow.setDirection(new THREE.Vector3(0, 0, Math.sign(field) || 1));
     arrow.setLength(Math.max(.02, Math.abs(field) * .85), Math.min(.13, Math.abs(field) * .3), .075);
   }
   for (const coil of coils) coil.mat.emissiveIntensity = .12 + gain * Math.abs(Math.cos(phase - coil.phase * TAU / 3)) * .75;
   partOpacity.update();
+  for (const { source, display, active, contextual, translucentLiner, mutedConductor } of focusMaterials) {
+    if (display.emissive) display.emissiveIntensity = translucentLiner ? .04 : active ? Math.max(.35, source.emissiveIntensity) : source.emissiveIntensity * (mutedConductor ? .35 : contextual ? 1 : .15);
+  }
   for (const display of conductorDisplays) {
     const a = display.a + (display.rotating ? rotorAngle : 0);
-    const value = gain * (display.rotating ? direction * Math.cos(a - phase) * slip() / .128 : Math.cos(phase - display.phaseIndex * TAU / 3) * (display.side === 0 ? 1 : -1));
+    const value = display.rotating
+      ? single ? gain * direction * Math.sin(phase) * Math.sin(a) * Math.min(1, slip() / .128) : rotorScale * Math.cos(a - phase + response.lag)
+      : gain * Math.cos(phase - display.phaseIndex * TAU / 3) * (display.side === 0 ? 1 : -1);
     const magnitude = Math.abs(value), sign = Math.sign(value) || 1;
-    display.current.visible = display.field.visible = magnitude > .015 && (display.rotating || display.distributed === distributed);
+    display.current.visible = display.field.visible = magnitude > .015 && (display.rotating || display.distributed === distributed) && (display.rotating ? !focus || Math.abs(Math.sin(display.a)) < .001 : !single || display.phaseIndex === 0);
     display.current.position.set(Math.cos(a) * display.radius, Math.sin(a) * display.radius, -.5 * sign);
     display.current.setDirection(new THREE.Vector3(0, 0, sign));
     display.current.setLength(Math.max(.02, magnitude * 1.1), Math.min(.15, magnitude * .35), .085);
@@ -492,28 +723,44 @@ function updateMotor() {
   }
   for (const { arrow, axis } of phaseFields) {
     const value = gain * Math.cos(phase - axis), magnitude = Math.abs(value);
-    arrow.visible = magnitude > .015;
+    arrow.visible = magnitude > .015 && (!single || axis === 0);
     arrow.setDirection(new THREE.Vector3(Math.cos(axis) * Math.sign(value), Math.sin(axis) * Math.sign(value), 0));
     arrow.setLength(Math.max(.02, magnitude * 1.13), Math.min(.15, magnitude * .3), .085);
   }
-  $('phase-values').textContent = ['U', 'V', 'W'].map((name, k) => `${name}: ${(gain * Math.cos(phase - k * TAU / 3)).toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: 'always' })}`).join('  ·  ');
+  $('phase-values').textContent = (single ? ['U'] : ['U', 'V', 'W']).map((name, k) => `${name}: ${(gain * Math.cos(phase - k * TAU / 3)).toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: 'always' })}`).join('  ·  ');
+  const degrees = Math.round(((phase % TAU + TAU) % TAU) * 180 / Math.PI);
+  $('learning-time').value = degrees;
+  $('learning-time-value').textContent = `${degrees}°`;
+  $('vector-heading').textContent = realistic ? 'Vorgegebene Erregung.' : single ? 'Eine Spule: Feld pendelt.' : 'Die Summe dreht sich.';
   for (let i = 0; i < forces.length; i++) {
-    const a = forces[i].a + rotorAngle, wave = Math.cos(a - phase);
-    const strength = gain * gain * wave * wave * (.12 + values.load / 100 * .65);
+    const a = forces[i].a + rotorAngle;
+    const currentValue = single ? gain * direction * Math.sin(phase) * Math.sin(a) * Math.min(1, slip() / .128) : rotorScale * Math.cos(a - phase + response.lag);
+    const strength = Math.abs(currentValue) * gain * fieldStrength * .85;
     const arrow = forces[i].arrow;
-    arrow.visible = strength > .01;
+    arrow.visible = strength > .01 && (!focus || i === 0 || i === 11);
     arrow.position.set(Math.cos(a) * 1.1, Math.sin(a) * 1.1, 1.13);
-    arrow.setDirection(new THREE.Vector3(-Math.sin(a) * direction, Math.cos(a) * direction, 0));
+    const sign = Math.sign(currentValue) || 1;
+    arrow.setDirection(new THREE.Vector3(-Math.sin(fieldAngle) * sign, Math.cos(fieldAngle) * sign, 0));
     arrow.setLength(Math.max(.02, strength), Math.min(.14, strength * .4), .07);
     const current = currents[i].arrow;
-    current.position.set(Math.cos(a) * 1.005, Math.sin(a) * 1.005, -.45 * Math.sign(wave * direction));
-    current.setDirection(new THREE.Vector3(0, 0, Math.sign(wave * direction) || 1));
-    const currentStrength = gain * Math.abs(wave) * slip() / .128;
-    current.visible = currentStrength > .015;
+    current.position.set(Math.cos(a) * 1.005, Math.sin(a) * 1.005, -.45 * sign);
+    current.setDirection(new THREE.Vector3(0, 0, sign));
+    const currentStrength = Math.abs(currentValue);
+    current.visible = currentStrength > .015 && (!focus || i === 0 || i === 11);
     current.setLength(Math.max(.02, currentStrength * .9), Math.min(.12, currentStrength * .3), .065);
   }
   // The optional field model owns its own field/current/force overlays, not the teaching diagrams.
-  magnetic.visible = !realistic && $('magnetic').checked;
+  magnetic.visible = !realistic && $('magnetic').checked && fieldStrength > .025;
+  beginner.update(phase, rotorAngle, direction);
+  learningOverlays.update({ angle: fieldAngle, strength: fieldStrength * gain,
+    mechanicalAngle: rotorAngle, markers: !single && $('motion-markers').checked,
+    rotorAngle: phase - response.lag - direction * Math.PI / 2, rotorStrength: Math.abs(rotorScale), rotorZ: rotorPart.position.z,
+    poles: !realistic && $('poles').checked, rotorPoles: !realistic && !single && $('rotor-poles').checked,
+    showProbe: !realistic && $('probe-magnet').checked, dt: running ? dt * values.speed * values.frequency : 0,
+  });
+  $('motion-guide').hidden = single || !$('motion-markers').checked;
+  $('rotor-angle-note').hidden = realistic || single || !$('rotor-poles').checked;
+  $('rotor-angle-note').textContent = `Rotorfeldversatz: ${(90 + Math.abs(response.lag) * 180 / Math.PI).toFixed(1)}°. ${$('rotor-held').checked ? 'Rotor fest: Schlupf 100 %, unabhängig von der Last.' : 'Abhängig von Schlupf und Rotorinduktivität.'}`;
   electric.visible = !realistic && $('electric').checked;
   conductorFields.visible = !realistic && $('conductor-fields').checked;
   rotorFields.visible = !realistic && $('rotor-fields').checked;
@@ -540,6 +787,7 @@ function frame(now) {
   requestAnimationFrame(frame);
   const dt = Math.min((now - last) / 1000, .05); last = now;
   if (running && !document.hidden) advance(dt * values.speed);
-  updateMotor(); controls.update(); renderer.render(scene, camera); instruments();
+  updateMotor(dt); controls.update(); renderer.render(scene, camera);
+  if ($('field-mode').value !== 'beginner') instruments();
 }
 requestAnimationFrame(frame);
